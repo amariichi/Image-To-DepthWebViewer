@@ -1,0 +1,4 @@
+[submodule "third_party/ml-depth-pro"]
+	path = third_party/ml-depth-pro
+	url = https://github.com/apple/ml-depth-pro.git
+	branch = main
