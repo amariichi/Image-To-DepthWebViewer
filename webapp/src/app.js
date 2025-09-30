@@ -6,6 +6,7 @@ import {
   DEFAULT_CENTER_Z,
 } from './geometry.js';
 import { createRenderer, mat4 } from './rendering.js';
+import WebXRManager from './webxr.js';
 
 const sourceInput = document.getElementById('source-input');
 const generateButton = document.getElementById('generate-depth');
@@ -18,6 +19,8 @@ const fileInput = document.getElementById('file-input');
 const openDialogButton = document.getElementById('open-dialog');
 const geomFovInput = document.getElementById('geom-fov');
 const displayModeInput = document.getElementById('display-mode');
+const enterVrButton = document.getElementById('enter-vr');
+const enterLookingGlassButton = document.getElementById('enter-looking-glass');
 const stereoSeparationInput = document.getElementById('stereo-separation');
 const swapEyesInput = document.getElementById('swap-eyes');
 const magnificationInput = document.getElementById('magnification');
@@ -43,6 +46,7 @@ const bindings = {
   stereoValue: document.querySelector('[data-bind="stereoValue"]'),
   sourceFile: document.querySelector('[data-bind="sourceFile"]'),
   backendStatus: document.querySelector('[data-bind="backendStatus"]'),
+  xrStatus: document.querySelector('[data-bind="xrStatus"]'),
 };
 
 const mirrorBindings = new Map();
@@ -80,6 +84,8 @@ try {
   showStatus(error.message, 0);
   throw error;
 }
+
+let xrManager = null;
 
 const state = {
   rgbde: null,
@@ -128,6 +134,14 @@ const state = {
     checking: false,
     note: null,
   },
+  xr: {
+    supported: false,
+    active: false,
+    mode: null,
+    status: 'WebXR: checking…',
+    lookingGlassReady: false,
+    lookingGlassError: null,
+  },
   asset: {
     blob: null,
     filename: null,
@@ -149,12 +163,14 @@ function init() {
   updateSaveButtonState();
   setReconstructionFov(state.meshConfig.geomFov, { rebuild: false });
   initMirrorPanel();
+  setupXR();
   setDisplayMode(state.stereo.mode);
   setUiHidden(false);
   stereoSeparationInput.value = state.stereo.separation.toFixed(3);
   swapEyesInput.checked = state.stereo.swapEyes;
   setSourceLabel(state.sourceLabel);
   updateBinding('stereoValue', state.stereo.separation.toFixed(3));
+  updateBinding('xrStatus', state.xr.status);
   checkBackend();
   resetView();
   resizeCanvas();
@@ -724,6 +740,102 @@ function setDisplayMode(mode) {
   updateMirrorVisibility();
 }
 
+function setupXR() {
+  if (!enterVrButton || !enterLookingGlassButton) {
+    return;
+  }
+  xrManager = new WebXRManager({
+    renderer,
+    canvas,
+    getModelMatrix: () => computeModelMatrix(),
+    onStatus: (label) => {
+      state.xr.status = label;
+      updateBinding('xrStatus', label);
+    },
+    onStateChange: (updates) => {
+      state.xr = { ...state.xr, ...updates };
+      if (!state.xr.supported && !state.xr.active) {
+        state.xr.status = 'WebXR unavailable';
+        updateBinding('xrStatus', state.xr.status);
+      }
+      updateXRButtons();
+      if (state.xr.active) {
+        setUiHidden(true);
+      }
+    },
+  });
+
+  enterVrButton.addEventListener('click', () => {
+    if (state.xr.active && state.xr.mode === 'vr') {
+      xrManager.exit();
+    } else {
+      handleEnterVr();
+    }
+  });
+
+  enterLookingGlassButton.addEventListener('click', () => {
+    if (state.xr.active && state.xr.mode === 'looking-glass') {
+      xrManager.exit();
+    } else {
+      handleEnterLookingGlass();
+    }
+  });
+
+  xrManager.detectSupport().finally(() => {
+    updateXRButtons();
+  });
+}
+
+function updateXRButtons() {
+  if (!enterVrButton || !enterLookingGlassButton) return;
+  const active = state.xr.active;
+  const mode = state.xr.mode;
+
+  if (active && mode === 'vr') {
+    enterVrButton.textContent = 'Exit VR Session';
+    enterVrButton.disabled = false;
+    enterLookingGlassButton.disabled = true;
+  } else {
+    enterVrButton.textContent = 'Enter VR';
+    enterLookingGlassButton.disabled = false;
+  }
+
+  if (active && mode === 'looking-glass') {
+    enterLookingGlassButton.textContent = 'Exit Looking Glass';
+    enterLookingGlassButton.disabled = false;
+    enterVrButton.disabled = true;
+  } else {
+    enterLookingGlassButton.textContent = 'Enter Looking Glass';
+    if (!active) {
+      enterVrButton.disabled = !state.xr.supported;
+    }
+  }
+
+  if (!active && !state.xr.supported) {
+    enterVrButton.disabled = true;
+  }
+
+  if (state.xr.lookingGlassError) {
+    updateBinding('xrStatus', `Looking Glass error: ${state.xr.lookingGlassError}`);
+  }
+}
+
+async function handleEnterVr() {
+  if (!xrManager) return;
+  const success = await xrManager.enterVR();
+  if (!success) {
+    showStatus('Unable to start VR session.', 4000);
+  }
+}
+
+async function handleEnterLookingGlass() {
+  if (!xrManager) return;
+  const success = await xrManager.enterLookingGlass();
+  if (!success) {
+    showStatus('Looking Glass session could not start.', 4000);
+  }
+}
+
 function syncMirrorControls() {
   if (!mirrorPanel) return;
   mirrorControls.forEach((mirrorNode, key) => {
@@ -795,8 +907,23 @@ function updateMirrorVisibility() {
   }
 }
 
+function computeModelMatrix() {
+  let model = mat4.identity();
+  const translateZ = state.controls.translationZ + state.autoTranslationZ;
+  model = mat4.translate(model, [state.controls.translationX, state.controls.translationY, translateZ]);
+  model = mat4.translate(model, [0, 0, state.pivotZ]);
+  model = mat4.rotateY(model, state.controls.rotationY);
+  model = mat4.rotateX(model, state.controls.rotationX);
+  model = mat4.scale(model, state.controls.scale);
+  model = mat4.translate(model, [0, 0, -state.pivotZ]);
+  return model;
+}
+
 function renderLoop() {
-  if (state.mesh) {
+  if (!state.xr.active) {
+    renderer.gl.bindFramebuffer(renderer.gl.FRAMEBUFFER, null);
+  }
+  if (!state.xr.active && state.mesh) {
     const width = canvas.width;
     const height = canvas.height;
     const monoAspect = width / height;
@@ -813,14 +940,7 @@ function renderLoop() {
     );
 
     const baseView = mat4.identity();
-    let model = mat4.identity();
-    const translateZ = state.controls.translationZ + state.autoTranslationZ;
-    model = mat4.translate(model, [state.controls.translationX, state.controls.translationY, translateZ]);
-    model = mat4.translate(model, [0, 0, state.pivotZ]);
-    model = mat4.rotateY(model, state.controls.rotationY);
-    model = mat4.rotateX(model, state.controls.rotationX);
-    model = mat4.scale(model, state.controls.scale);
-    model = mat4.translate(model, [0, 0, -state.pivotZ]);
+    const model = computeModelMatrix();
 
     if (!isStereo) {
       renderer.render(model, baseView, projection, {
@@ -862,7 +982,7 @@ function renderLoop() {
         clearDepth: true,
       });
     }
-  } else {
+  } else if (!state.xr.active) {
     renderer.gl.clear(renderer.gl.COLOR_BUFFER_BIT | renderer.gl.DEPTH_BUFFER_BIT);
   }
   syncMirrorControls();

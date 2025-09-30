@@ -112,6 +112,17 @@ header .subtitle {
   width: 100%;
 }
 
+.control.column > span {
+  font-weight: 600;
+}
+
+.control .actions.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+
 .control button {
   align-self: flex-start;
   background: #111;

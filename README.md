@@ -47,11 +47,23 @@ This repository now ships a two-part toolchain: a WebGL viewer in `webapp/` and 
    - Choose **Display Mode** (2D or 3D SBS), tweak **Stereo Separation** (0–0.10 m) and optionally **Swap Left/Right** before donning glasses. Sliders mirror the Unity tooling: reconstruction/display FOV, magnification, depth mode/log power, far crop (1–1000 m), and Model Z Offset (±5 m). Mouse wheel zooms (scale 0.05–25), left-drag rotates (±30° per axis), right-drag pans, double-click resets.
    - Running the backend elsewhere? Set `window.__RGBDE_API_BASE__ = 'http://host:port'` before loading, or adjust `API_BASE` in `webapp/src/app.js`.
 
+### WebXR / XR playback
+- The control panel now includes **Enter VR** and **Enter Looking Glass** buttons (requires Chromium-based browsers on HTTPS/localhost).
+- **Meta Quest via Link:** start Meta Quest Link on Windows 11+, open the viewer in Edge/Chrome, then click *Enter VR*. The session uses `immersive-vr` with per-eye rendering; exiting VR restores the standard canvas.
+- **Looking Glass displays:** install Looking Glass Bridge, connect the display, and click *Enter Looking Glass*. The viewer dynamically loads the official `@lookingglass/webxr` v0.6.0 polyfill to drive the multi-view quilt. Keep Bridge running so the polyfill detects the display. Looking Glass renders many viewpoints at once, so once in XR the model appears freely rotatable even though the mouse-driven offsets stay within the ±30° clamp.
+- WebXR requires a secure origin; deploy behind HTTPS in production (self-signed certificates won’t satisfy Quest browsers). Local development on `http://localhost` works because browsers treat it as a secure context.
+- While an XR session is active the 2D UI hides automatically—press the toggle on exit to restore it if needed.
+
 ### Repository Layout
 - `webapp/index.html` – entry point and UI shell.
 - `webapp/src/geometry.js` – RGBDE decoding, depth preprocessing, mesh density selection, and pinhole projection.
 - `webapp/src/rendering.js` – WebGL2 renderer, shader setup, and camera math.
 - `webapp/src/app.js` – event wiring, UI bindings, and interaction logic.
+
+### Third-Party Resources
+- **Apple Depth Pro** – Pulled via `scripts/bootstrap.py` into `third_party/ml-depth-pro`. Usage is governed by Apple’s sample code license (`third_party/ml-depth-pro/LICENSE`). Installers must agree to that license before running the backend.
+- **Looking Glass WebXR Polyfill** – Loaded at runtime from the official CDN (`@lookingglass/webxr`). The package is not bundled with this repo; when used, it remains subject to Looking Glass Factory’s license terms (see the package’s `LICENSE` on npm).
+- These components are external dependencies and are not redistributed here. If you plan to bundle them, ensure your distribution complies with each provider’s license terms (including any redistribution restrictions).
 
 
 ## 日本語
@@ -96,8 +108,20 @@ This repository now ships a two-part toolchain: a WebGL viewer in `webapp/` and 
    - **Display Mode** で 2D / 3D (SBS) を切り替え、**Stereo Separation**（0〜0.10 m）や **Swap Left/Right** を必要に応じて設定してください。再構成／表示 FOV、Depth Magnification、Depth Mode + Log Power、Far Crop Distance（1〜1000 m）、Model Z Offset（±5 m）はスライダーで調整可能です。マウスホイールでズーム（0.05〜25）、左ドラッグで回転、右ドラッグで平行移動、ダブルクリックでリセットします。
    - バックエンドを別ホスト／別ポートで稼働させる場合は、ページ読込前に `window.__RGBDE_API_BASE__ = "http://host:port"` を設定するか、`webapp/src/app.js` の `API_BASE` を編集してください。
 
+### WebXR / XR 再生
+- コントロールパネルに **Enter VR** / **Enter Looking Glass** ボタンを追加しました（Chromium 系ブラウザ + HTTPS/localhost が必要）。
+- **Meta Quest (Link)**: Windows 11 で Meta Quest Link を起動し、Edge/Chrome からビューアを開いて *Enter VR* をクリックすると `immersive-vr` セッションが開始されます。終了すると通常表示に戻ります。
+- **Looking Glass displays**: Looking Glass Bridge を起動しディスプレイを接続してから *Enter Looking Glass* を押すと、公式 `@lookingglass/webxr` v0.6.0 polyfill を動的に読み込み、多視点キルト描画に切り替わります。Bridge を常時起動しておいてください。多視点キルトにより表示側で広い角度が補間されるため、XR中はモデルを自由に回しているように見えます（マウス操作の回転制限自体は従来どおり ±30° です）。
+- WebXR API は HTTPS などのセキュアオリジンでのみ利用可能です。Quest ブラウザでは自己署名証明書は使えないため、本番では正規証明書を用意してください。ローカル開発での `http://localhost` アクセスは例外的にセキュア扱いとなるため、その場合は従来どおり動作します。
+- XR セッション中は 2D UI が自動的に非表示になります。終了後に必要なら「Hide UI」ボタンで再表示できます。
+
 ### ディレクトリ構成
 - `webapp/index.html` – 画面レイアウトと UI。
 - `webapp/src/geometry.js` – RGBDE の展開、デプス前処理、メッシュ分割と投影ロジック。
 - `webapp/src/rendering.js` – WebGL2 レンダラーとカメラ行列。
 - `webapp/src/app.js` – UI イベントとインタラクション制御。
+
+### サードパーティリソース
+- **Apple Depth Pro** – `scripts/bootstrap.py` 実行時に `third_party/ml-depth-pro` として取得されます。利用には Apple のサンプルコードライセンス (`third_party/ml-depth-pro/LICENSE`) への同意が必要です。
+- **Looking Glass WebXR Polyfill** – 実行時に CDN (`@lookingglass/webxr`) から読み込みます。このリポジトリには同梱していませんが、利用時は Looking Glass Factory のライセンス（パッケージの `LICENSE` 参照）に従ってください。
+- これら外部コンポーネントを成果物に含める場合は、各提供元のライセンス条件（再配布可否や同梱義務を含む）に従ってください。

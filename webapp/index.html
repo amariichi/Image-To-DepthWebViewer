@@ -40,6 +40,14 @@
             <option value="sbs">3D SBS</option>
           </select>
         </div>
+        <div class="control column">
+          <span>XR Sessions</span>
+          <div class="actions stack">
+            <button id="enter-vr" type="button">Enter VR</button>
+            <button id="enter-looking-glass" type="button">Enter Looking Glass</button>
+          </div>
+          <p class="hint" data-bind="xrStatus">WebXR: checking…</p>
+        </div>
         <div class="control">
           <label for="geom-fov">Geometry FOV <span data-bind="geomFovValue">60</span>°</label>
           <input id="geom-fov" data-sync="geomFov" type="range" min="15" max="120" step="1" value="60" />

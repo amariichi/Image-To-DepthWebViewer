@@ -29,7 +29,7 @@ void main() {
 `;
 
 export function createRenderer(canvas) {
-  const gl = canvas.getContext('webgl2', { antialias: true });
+  const gl = canvas.getContext('webgl2', { antialias: true, xrCompatible: true });
   if (!gl) {
     throw new Error('WebGL2 is not available in this browser.');
   }
