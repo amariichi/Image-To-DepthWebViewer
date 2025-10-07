@@ -25,6 +25,7 @@
             </label>
             <button id="generate-depth" data-sync="generate" type="button">Generate Depth</button>
             <button id="save-rgbde" data-sync="save" type="button" disabled>Save RGBDE</button>
+            <button id="save-gltf" data-sync="saveGltf" type="button" disabled>Save glTF</button>
           </div>
           <p class="hint" data-bind="backendStatus">Depth service: checking…</p>
         </div>
@@ -97,6 +98,7 @@
         <ul>
           <li>Use <strong>Generate Depth</strong> to run Depth Pro on a JPG/PNG (requires backend).</li>
           <li><strong>Save RGBDE</strong> downloads the currently loaded PNG to your machine.</li>
+          <li><strong>Save glTF</strong> exports the current mesh with your adjustments.</li>
           <li>Left-drag to rotate (±30° clamp per axis).</li>
           <li>Right-drag to pan the model.</li>
           <li>Mouse wheel to zoom in/out.</li>

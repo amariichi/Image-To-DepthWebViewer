@@ -6,7 +6,7 @@ Language / 言語: [English](#english) | [日本語](#日本語)
 ## English
 
 ### Overview
-This repository now ships a two-part toolchain: a WebGL viewer in `webapp/` and a FastAPI backend in `server/`. Raw JPG/PNG images are uploaded through the UI, the backend runs Apple Depth Pro (pulled in as the `third_party/ml-depth-pro` submodule plus `depth-pro_rgbde.py`) to infer depth, and the resulting depth-augmented PNG (RGBDE PNG) streams straight back to the browser for preview and download. Precomputed RGBDE assets remain fully supported. In the viewer you can switch between linear/log depth, apply magnification (0.1×–100×), clamp the far plane (1–1000 m), and tune both reconstruction and display FOVs in real time.
+This repository now ships a two-part toolchain: a WebGL viewer in `webapp/` and a FastAPI backend in `server/`. Raw JPG/PNG images are uploaded through the UI, the backend runs Apple Depth Pro (pulled in as the `third_party/ml-depth-pro` submodule plus `depth-pro_rgbde.py`) to infer depth, and the resulting depth-augmented PNG (RGBDE PNG) streams straight back to the browser for preview and download. Precomputed RGBDE assets remain fully supported. From the viewer you can export the adjusted mesh and texture as a binary glTF (`.glb`) with an unlit material (`KHR_materials_unlit`) for DCC packages such as Blender. While inspecting the scene you can switch between linear/log depth, apply magnification (0.1×–100×), clamp the far plane (1–1000 m), and tune both reconstruction and display FOVs in real time.
 
 ### Getting Started
 1. Initialise the repo (installs requirements, creates `.venv`, pulls Depth Pro submodule):
@@ -44,7 +44,8 @@ This repository now ships a two-part toolchain: a WebGL viewer in `webapp/` and 
    - Use **2D Image (JPEG or PNG) → Generate Depth** to run Depth Pro on a JPG/PNG; the backend never keeps files after responding.
    - Drop an existing RGBDE PNG anywhere in the window to load it instantly.
    - **Save RGBDE** downloads the in-memory PNG (generated or uploaded).
-   - Choose **Display Mode** (2D or 3D SBS), tweak **Stereo Separation** (0–0.10 m) and optionally **Swap Left/Right** before donning glasses. Sliders mirror the Unity tooling: reconstruction/display FOV, magnification, depth mode/log power, far crop (1–1000 m), and Model Z Offset (±5 m). Mouse wheel zooms (scale 0.05–25), left-drag rotates (±30° per axis), right-drag pans, double-click resets.
+  - **Save glTF** exports the currently displayed mesh (including your slider tweaks) as a `.glb` with embedded texture and an unlit material (`KHR_materials_unlit`)—ready for Blender or any other tool that accepts glTF 2.0.
+   - Choose **Display Mode** (2D or 3D SBS), tweak **Stereo Separation** (0–0.10 m) and optionally **Swap Left/Right** before donning glasses. Sliders cover reconstruction/display FOV, magnification, depth mode/log power, far crop (1–1000 m), and Model Z Offset (±5 m). Mouse wheel zooms (scale 0.05–25), left-drag rotates (±30° per axis), right-drag pans, double-click resets.
    - Running the backend elsewhere? Set `window.__RGBDE_API_BASE__ = 'http://host:port'` before loading, or adjust `API_BASE` in `webapp/src/app.js`.
 
 ### WebXR / XR playback
@@ -59,6 +60,8 @@ This repository now ships a two-part toolchain: a WebGL viewer in `webapp/` and 
 - `webapp/src/geometry.js` – RGBDE decoding, depth preprocessing, mesh density selection, and pinhole projection.
 - `webapp/src/rendering.js` – WebGL2 renderer, shader setup, and camera math.
 - `webapp/src/app.js` – event wiring, UI bindings, and interaction logic.
+- `webapp/src/gltf-exporter.js` – binary glTF (`.glb`) writer used by the *Save glTF* workflow.
+- `webapp/src/webxr.js` – WebXR session orchestration for VR and Looking Glass.
 
 ### Third-Party Resources
 - **Apple Depth Pro** – Pulled via `scripts/bootstrap.py` into `third_party/ml-depth-pro`. Usage is governed by Apple’s sample code license (`third_party/ml-depth-pro/LICENSE`). Installers must agree to that license before running the backend.
@@ -69,7 +72,7 @@ This repository now ships a two-part toolchain: a WebGL viewer in `webapp/` and 
 ## 日本語
 
 ### 概要
-本リポジトリは WebGL ビューア (`webapp/`) と Python/FastAPI バックエンド (`server/`) をセットで提供します。フロントエンドから JPG / PNG をアップロードすると、バックエンドが Submodule で取り込んだ Apple Depth Pro（`third_party/ml-depth-pro` と `depth-pro_rgbde.py`）を実行し、右半分に little-endian の uint32 深度を埋め込んだデプス付き PNG（RGBDE PNG）を生成、即座にブラウザへ返します。既存の RGBDE PNG をドラッグ＆ドロップで読み込むこともできます。UI では線形／対数デプス、拡大率（0.1×〜100×）、最大距離クロップ（1〜1000 m）、再構成・表示 FOV を Unity アプリ同様の操作感で調整できます。
+本リポジトリは WebGL ビューア (`webapp/`) と Python/FastAPI バックエンド (`server/`) をセットで提供します。フロントエンドから JPG / PNG をアップロードすると、バックエンドが submodule で取り込んだ Apple Depth Pro（`third_party/ml-depth-pro` と `depth-pro_rgbde.py`）を実行し、右半分に little-endian の uint32 深度を埋め込んだデプス付き PNG（RGBDE PNG）を生成、即座にブラウザへ返します。既存の RGBDE PNG をドラッグ＆ドロップで読み込むこともできます。UI では線形／対数デプス、拡大率（0.1×〜100×）、最大距離クロップ（1〜1000 m）、再構成・表示 FOV を調整でき、調整済みメッシュとテクスチャをバイナリ glTF (`.glb`) として書き出して Blender などで再利用できます。
 
 ### 使い方
 1. まず依存関係と Submodule をまとめてセットアップします。
@@ -104,6 +107,7 @@ This repository now ships a two-part toolchain: a WebGL viewer in `webapp/` and 
 4. ブラウザ (Chrome / Edge / Safari) で `http://localhost:5173` を開き、以下を操作します。
    - **2D Image (JPEG or PNG) → Generate Depth**: JPG/PNG をアップロードすると Depth Pro が実行され、生成した RGBDE が即表示されます（サーバー側の一時ファイルはレスポンス後に削除）。
    - **Save RGBDE**: 表示中の RGBDE をローカルにダウンロードします。
+   - **Save glTF**: 現在のメッシュとテクスチャ（スライダー調整込み）を `.glb` としてエクスポートします。`KHR_materials_unlit` 拡張を使ったアンリットマテリアル付きで、glTF 2.0 対応の DCC やツールでそのまま利用できます。
    - 既存の RGBDE PNG はドラッグ＆ドロップでも読み込めます。
    - **Display Mode** で 2D / 3D (SBS) を切り替え、**Stereo Separation**（0〜0.10 m）や **Swap Left/Right** を必要に応じて設定してください。再構成／表示 FOV、Depth Magnification、Depth Mode + Log Power、Far Crop Distance（1〜1000 m）、Model Z Offset（±5 m）はスライダーで調整可能です。マウスホイールでズーム（0.05〜25）、左ドラッグで回転、右ドラッグで平行移動、ダブルクリックでリセットします。
    - バックエンドを別ホスト／別ポートで稼働させる場合は、ページ読込前に `window.__RGBDE_API_BASE__ = "http://host:port"` を設定するか、`webapp/src/app.js` の `API_BASE` を編集してください。
@@ -120,6 +124,8 @@ This repository now ships a two-part toolchain: a WebGL viewer in `webapp/` and 
 - `webapp/src/geometry.js` – RGBDE の展開、デプス前処理、メッシュ分割と投影ロジック。
 - `webapp/src/rendering.js` – WebGL2 レンダラーとカメラ行列。
 - `webapp/src/app.js` – UI イベントとインタラクション制御。
+- `webapp/src/gltf-exporter.js` – *Save glTF* で使用する glTF (`.glb`) エクスポータ。
+- `webapp/src/webxr.js` – VR / Looking Glass 向け WebXR セッション管理。
 
 ### サードパーティリソース
 - **Apple Depth Pro** – `scripts/bootstrap.py` 実行時に `third_party/ml-depth-pro` として取得されます。利用には Apple のサンプルコードライセンス (`third_party/ml-depth-pro/LICENSE`) への同意が必要です。

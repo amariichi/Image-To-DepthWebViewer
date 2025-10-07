@@ -7,10 +7,12 @@ import {
 } from './geometry.js';
 import { createRenderer, mat4 } from './rendering.js';
 import WebXRManager from './webxr.js';
+import { createGlbBlob } from './gltf-exporter.js';
 
 const sourceInput = document.getElementById('source-input');
 const generateButton = document.getElementById('generate-depth');
 const saveButton = document.getElementById('save-rgbde');
+const saveGltfButton = document.getElementById('save-gltf');
 const canvas = document.getElementById('glCanvas');
 const toggleButton = document.getElementById('toggle-ui');
 const mirrorToggleButton = document.getElementById('toggle-ui-mirror');
@@ -76,6 +78,7 @@ const SAVE_LABEL_EXISTING = 'Download RGBDE';
 const STEREO_MIN = 0;
 const STEREO_MAX = 0.1;
 const STEREO_DEFAULT = 0.02;
+const BACKEND_TIMEOUT_MS = 7000;
 
 let renderer;
 try {
@@ -158,7 +161,10 @@ function init() {
   attachDropListeners();
   window.addEventListener('resize', resizeCanvas);
   saveButton.disabled = true;
-  generateButton.disabled = true;
+  if (saveGltfButton) {
+    saveGltfButton.disabled = true;
+  }
+  generateButton.disabled = false;
   generateButton.textContent = GENERATE_LABEL_DEFAULT;
   updateSaveButtonState();
   setReconstructionFov(state.meshConfig.geomFov, { rebuild: false });
@@ -224,6 +230,7 @@ async function handleFiles(input, meta = {}) {
     console.info('Mesh depth sample', mesh.baseDepths.slice(0, 10));
     renderer.updateGeometry(mesh);
     renderer.setTexture(data.textureImage);
+    updateGlbButtonState();
     state.baseBounds = computeBaseBounds(mesh);
     state.initialScale = calculateInitialScale(state.baseBounds);
 
@@ -280,6 +287,7 @@ function updateSaveButtonState() {
   if (!state.asset.blob) {
     saveButton.disabled = true;
     saveButton.textContent = SAVE_LABEL_GENERATED;
+    updateGlbButtonState();
     return;
   }
   saveButton.disabled = false;
@@ -288,6 +296,13 @@ function updateSaveButtonState() {
   } else {
     saveButton.textContent = SAVE_LABEL_EXISTING;
   }
+  updateGlbButtonState();
+}
+
+function updateGlbButtonState() {
+  if (!saveGltfButton) return;
+  const meshReady = Boolean(state.mesh && state.rgbde);
+  saveGltfButton.disabled = !meshReady;
 }
 
 function saveCurrentAsset() {
@@ -302,9 +317,69 @@ function saveCurrentAsset() {
   URL.revokeObjectURL(url);
 }
 
+function getExportBaseName() {
+  if (state.asset && state.asset.filename) {
+    const withoutExtension = state.asset.filename.replace(/\.[^.]+$/, '');
+    const sanitized = withoutExtension.replace(/_RGBDE$/i, '');
+    return sanitized || 'depth_export';
+  }
+  return 'depth_export';
+}
+
+async function saveCurrentMeshAsGlb() {
+  if (!state.mesh) {
+    showStatus('No mesh available to export.', 3000);
+    return;
+  }
+  if (!state.rgbde || !state.rgbde.textureImage) {
+    showStatus('Texture data is unavailable for export.', 4000);
+    return;
+  }
+  const buttonRestore = saveGltfButton ? saveGltfButton.disabled : null;
+  if (saveGltfButton) {
+    saveGltfButton.disabled = true;
+  }
+  try {
+    showStatus('Preparing glTF export…', 0);
+    const modelMatrix = computeModelMatrix();
+    const baseName = getExportBaseName();
+    const textureFileName = `${baseName || 'depth_export'}.png`;
+    const blob = await createGlbBlob({
+      mesh: state.mesh,
+      modelMatrix,
+      meshName: baseName,
+      includeUVs: Boolean(state.mesh.uvs),
+      texture: {
+        imageData: state.rgbde.textureImage,
+        fileName: textureFileName,
+      },
+    });
+    const filename = `${baseName || 'depth_export'}.glb`;
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+    showStatus(`Exported ${filename}`, 3000);
+  } catch (error) {
+    console.error(error);
+    const message = error && error.message ? error.message : 'Failed to export glTF.';
+    showStatus(message, 5000);
+  } finally {
+    if (saveGltfButton && buttonRestore !== null) {
+      saveGltfButton.disabled = buttonRestore;
+    } else if (saveGltfButton) {
+      saveGltfButton.disabled = false;
+    }
+  }
+}
+
 function setProcessing(isProcessing) {
   state.processing = isProcessing;
-  generateButton.disabled = !state.backend.available || isProcessing;
+  generateButton.disabled = Boolean(isProcessing);
   generateButton.textContent = isProcessing ? GENERATE_LABEL_BUSY : GENERATE_LABEL_DEFAULT;
 }
 
@@ -389,23 +464,43 @@ async function requestDepthGeneration(file) {
 }
 
 async function checkBackend() {
+  if (state.backend.checking) {
+    return;
+  }
   state.backend.checking = true;
   updateBackendStatus();
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  let timeoutId = null;
+  if (controller) {
+    timeoutId = setTimeout(() => {
+      controller.abort();
+    }, BACKEND_TIMEOUT_MS);
+  }
   try {
-    const response = await fetch(`${API_BASE}/api/status`, { cache: 'no-store' });
+    const response = await fetch(`${API_BASE}/api/status`, {
+      cache: 'no-store',
+      signal: controller ? controller.signal : undefined,
+    });
     if (!response.ok) {
       throw new Error('Status check failed');
     }
     const data = await response.json();
     state.backend.available = true;
     state.backend.device = data.device || 'unknown';
+    state.backend.note = null;
   } catch (error) {
     console.warn('Backend status check failed', error);
     state.backend.available = false;
     state.backend.device = null;
+    if (error && error.name === 'AbortError') {
+      state.backend.note = 'status check timed out';
+    }
   } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
     state.backend.checking = false;
-    if (!state.backend.available) {
+    if (!state.backend.available && state.backend.note && state.backend.note.startsWith('selected ')) {
       state.backend.note = null;
     }
     updateBackendStatus();
@@ -503,6 +598,11 @@ function attachUIListeners() {
   });
 
   saveButton.addEventListener('click', saveCurrentAsset);
+  if (saveGltfButton) {
+    saveGltfButton.addEventListener('click', () => {
+      void saveCurrentMeshAsGlb();
+    });
+  }
   toggleButton.addEventListener('click', () => {
     setUiHidden(!state.uiHidden);
   });
@@ -1174,6 +1274,7 @@ function rebuildMesh({ preserveView = true, skipReset = false } = {}) {
   state.mesh = mesh;
   renderer.updateGeometry(mesh);
   renderer.setTexture(textureImage);
+  updateGlbButtonState();
   state.baseBounds = computeBaseBounds(mesh);
   state.initialScale = calculateInitialScale(state.baseBounds);
 
