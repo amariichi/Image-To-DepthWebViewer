@@ -79,6 +79,17 @@ const STEREO_MIN = 0;
 const STEREO_MAX = 0.1;
 const STEREO_DEFAULT = 0.02;
 const BACKEND_TIMEOUT_MS = 7000;
+const POINTER_ROTATION_SENSITIVITY = (Math.PI / 180) * 0.04;
+const POINTER_MAX_ANGLE = Math.PI / 6;
+const XR_TRANSLATION_PIXEL_SCALE = 1500;
+const XR_STICK_DEADZONE = 0.08;
+const XR_ROTATION_PIXEL_SCALE = 2000;
+const XR_TRANSLATION_Z_SCALE = 5;
+const XR_TRIGGER_SCALE_COEF = 1200;
+const XR_TRIGGER_Z_DEADZONE = 0.0005;
+const XR_FOV_DELTA_PER_FRAME = 0.2;
+const XR_MAG_DELTA_PER_FRAME = 0.02;
+const XR_FAR_DELTA_PER_SEC = 50;
 
 let renderer;
 try {
@@ -89,6 +100,77 @@ try {
 }
 
 let xrManager = null;
+
+const xrLeftControllerState = {
+  rotating: false,
+  dragging: false,
+  lastEuler: null,
+  lastPosition: null,
+  inputSource: null,
+  triggerHeld: false,
+  gripHeld: false,
+  lastRotatePosition: null,
+  farAdjust: 0,
+};
+
+function resetLeftControllerState(options = {}) {
+  const { keepSource = false } = options;
+  xrLeftControllerState.rotating = false;
+  xrLeftControllerState.dragging = false;
+  xrLeftControllerState.lastEuler = null;
+  xrLeftControllerState.lastPosition = null;
+  xrLeftControllerState.lastRotatePosition = null;
+  xrLeftControllerState.triggerHeld = false;
+  xrLeftControllerState.gripHeld = false;
+  xrLeftControllerState.farAdjust = 0;
+  if (!keepSource) {
+    xrLeftControllerState.inputSource = null;
+  }
+}
+
+function updateXRDebug(payload) {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  window.__xrDebug = {
+    timestamp: performance.now(),
+    ...payload,
+  };
+}
+
+function selectPreferredInputSource(sources) {
+  if (!sources || sources.length === 0) {
+    return null;
+  }
+  const priority = ['left', 'none', 'right'];
+  for (const handedness of priority) {
+    const match = sources.find((source) => source && source.handedness === handedness);
+    if (match) {
+      return match;
+    }
+  }
+  return sources[0] || null;
+}
+
+function isSameInputSource(a, b) {
+  return Boolean(a && b && a === b);
+}
+
+function assignActiveInputSource(source, { reason } = {}) {
+  if (!source) {
+    return;
+  }
+  if (!isSameInputSource(xrLeftControllerState.inputSource, source)) {
+    xrLeftControllerState.inputSource = source;
+    xrLeftControllerState.lastEuler = null;
+    xrLeftControllerState.lastPosition = null;
+  }
+  updateXRDebug({
+    note: reason || 'active input source assigned',
+    handedness: source.handedness,
+    hasGamepad: Boolean(source.gamepad),
+  });
+}
 
 const state = {
   rgbde: null,
@@ -677,6 +759,156 @@ function attachUIListeners() {
   });
 }
 
+function applyRotationDelta(dx, dy) {
+  state.controls.rotationY = clamp(
+    state.controls.rotationY + dx * POINTER_ROTATION_SENSITIVITY,
+    -POINTER_MAX_ANGLE,
+    POINTER_MAX_ANGLE,
+  );
+  state.controls.rotationX = clamp(
+    state.controls.rotationX + dy * POINTER_ROTATION_SENSITIVITY,
+    -POINTER_MAX_ANGLE,
+    POINTER_MAX_ANGLE,
+  );
+}
+
+function applyTranslationDelta(dx, dy) {
+  const sizeFactor = state.baseBounds ? Math.max(state.baseBounds.sizeX, state.baseBounds.sizeY, 0.1) : 1;
+  const movementScale = Math.min(sizeFactor + 0.3, 10);
+  const factor = 0.0003 * movementScale * (state.controls.scale + 0.2);
+  state.controls.translationX += dx * factor;
+  state.controls.translationY -= dy * factor;
+}
+
+function applyTranslationZDelta(delta) {
+  if (!Number.isFinite(delta) || delta === 0) {
+    return;
+  }
+  const next = clamp(state.controls.translationZ + delta, -MAX_Z_OFFSET, MAX_Z_OFFSET);
+  if (next === state.controls.translationZ) {
+    return;
+  }
+  state.controls.translationZ = next;
+  if (zOffsetInput) {
+    zOffsetInput.value = next.toFixed(2);
+  }
+  updateBinding('zOffsetValue', next.toFixed(2));
+  syncMirrorControls();
+}
+
+function applyScaleFactor(factor) {
+  if (!Number.isFinite(factor) || factor === 0) {
+    return;
+  }
+  const next = clamp(state.controls.scale * factor, MIN_SCALE, MAX_SCALE);
+  if (next === state.controls.scale) {
+    return;
+  }
+  state.controls.scale = next;
+}
+
+function applyScaleDelta(deltaMeters) {
+  if (!Number.isFinite(deltaMeters) || Math.abs(deltaMeters) <= XR_TRIGGER_Z_DEADZONE) {
+    return;
+  }
+  const factor = Math.exp(-deltaMeters * XR_TRIGGER_SCALE_COEF * 0.001);
+  applyScaleFactor(factor);
+}
+
+function applyFovDelta(delta) {
+  if (!Number.isFinite(delta) || delta === 0) {
+    return;
+  }
+  const current = state.meshConfig.geomFov ?? GEOM_FOV_DEFAULT;
+  const next = clamp(current + delta, GEOM_FOV_MIN, GEOM_FOV_MAX);
+  if (next === current) {
+    return;
+  }
+  setReconstructionFov(next, { rebuild: true, preserveView: true });
+  syncMirrorControls();
+}
+
+function applyMagnificationDelta(deltaFraction) {
+  if (!Number.isFinite(deltaFraction) || deltaFraction === 0) {
+    return;
+  }
+  const current = state.options.magnification;
+  const next = clamp(current * (1 + deltaFraction), MAG_MIN, MAG_MAX);
+  if (next === current) {
+    return;
+  }
+  state.options.magnification = next;
+  if (magnificationInput) {
+    magnificationInput.value = String(Math.round(magnificationToSlider(next)));
+  }
+  updateBinding('magnificationValue', next.toFixed(2));
+  updateDepthTransform();
+  syncMirrorControls();
+}
+
+function computeFarAdjust(gamepad) {
+  if (!gamepad || !Array.isArray(gamepad.buttons)) {
+    return 0;
+  }
+  const decrement = Number(gamepad.buttons[4]?.pressed) || Number(gamepad.buttons[4]?.value > 0.5) || 0; // X button (left controller)
+  const increment = Number(gamepad.buttons[5]?.pressed) || Number(gamepad.buttons[5]?.value > 0.5) || 0; // Y button
+  return increment - decrement;
+}
+
+function applyFarClipDelta(delta) {
+  if (!Number.isFinite(delta) || delta === 0) {
+    return;
+  }
+  const current = state.options.farClip;
+  const next = clamp(current + delta, FAR_MIN, FAR_MAX);
+  if (next === current) {
+    return;
+  }
+  state.options.farClip = next;
+  updateBinding('farClipValue', formatFarClip(next));
+  if (farClipInput) {
+    farClipInput.value = String(farClipToSlider(next));
+  }
+  updateDepthTransform();
+  syncMirrorControls();
+}
+
+function getDominantStick(gamepad) {
+  if (!gamepad || !Array.isArray(gamepad.axes) || gamepad.axes.length === 0) {
+    return { x: 0, y: 0, pair: -1 };
+  }
+  const axes = gamepad.axes;
+  const pairs = [];
+  if (axes.length >= 2) {
+    pairs.push({ x: axes[0], y: axes[1], pair: 0 });
+  }
+  if (axes.length >= 4) {
+    pairs.push({ x: axes[2], y: axes[3], pair: 1 });
+  }
+  if (pairs.length === 0) {
+    return { x: 0, y: 0, pair: -1 };
+  }
+  let best = pairs[0];
+  let bestMagnitude = Math.abs(best.x) + Math.abs(best.y);
+  for (let index = 1; index < pairs.length; index += 1) {
+    const candidate = pairs[index];
+    const magnitude = Math.abs(candidate.x) + Math.abs(candidate.y);
+    if (magnitude > bestMagnitude) {
+      best = candidate;
+      bestMagnitude = magnitude;
+    }
+  }
+  return best;
+}
+
+function applyWheelDelta(deltaY) {
+  if (!deltaY) {
+    return;
+  }
+  const factor = Math.exp(-deltaY * 0.001);
+  state.controls.scale = clamp(state.controls.scale * factor, MIN_SCALE, MAX_SCALE);
+}
+
 function attachPointerListeners() {
   canvas.addEventListener('mousedown', (event) => {
     if (event.button === 0) {
@@ -703,21 +935,14 @@ function attachPointerListeners() {
     if (state.interaction.rotating) {
       const dx = event.clientX - state.interaction.lastX;
       const dy = event.clientY - state.interaction.lastY;
-      const sensitivity = (Math.PI / 180) * 0.04;
-      const maxAngle = Math.PI / 6;
-      state.controls.rotationY = clamp(state.controls.rotationY + dx * sensitivity, -maxAngle, maxAngle);
-      state.controls.rotationX = clamp(state.controls.rotationX + dy * sensitivity, -maxAngle, maxAngle);
+      applyRotationDelta(dx, dy);
       state.interaction.lastX = event.clientX;
       state.interaction.lastY = event.clientY;
     }
     if (state.interaction.dragging) {
       const dx = event.clientX - state.interaction.lastX;
       const dy = event.clientY - state.interaction.lastY;
-      const sizeFactor = state.baseBounds ? Math.max(state.baseBounds.sizeX, state.baseBounds.sizeY, 0.1) : 1;
-      const movementScale = Math.min(sizeFactor + 0.3, 10);
-      const factor = 0.0003 * movementScale * (state.controls.scale + 0.2);
-      state.controls.translationX += dx * factor;
-      state.controls.translationY -= dy * factor;
+      applyTranslationDelta(dx, dy);
       state.interaction.lastX = event.clientX;
       state.interaction.lastY = event.clientY;
     }
@@ -725,8 +950,7 @@ function attachPointerListeners() {
 
   canvas.addEventListener('wheel', (event) => {
     event.preventDefault();
-    const factor = Math.exp(-event.deltaY * 0.001);
-    state.controls.scale = clamp(state.controls.scale * factor, MIN_SCALE, MAX_SCALE);
+    applyWheelDelta(event.deltaY);
   }, { passive: false });
 
   canvas.addEventListener('contextmenu', (event) => {
@@ -742,6 +966,311 @@ function attachPointerListeners() {
     updateBinding('zOffsetValue', '0.00');
     updateDepthTransform({ resetTranslation: true });
   });
+}
+
+function handleXRInputSourcesChange(event) {
+  const session = event?.session || window.xrManager?.session || null;
+  const added = Array.isArray(event?.added) ? event.added : event?.added ? Array.from(event.added) : [];
+  const removed = Array.isArray(event?.removed) ? event.removed : event?.removed ? Array.from(event.removed) : [];
+  const sessionSources = session ? Array.from(session.inputSources || []) : [];
+
+  if (removed.includes(xrLeftControllerState.inputSource)) {
+    resetLeftControllerState({ keepSource: false });
+  }
+
+  const preferred = selectPreferredInputSource(added) || selectPreferredInputSource(sessionSources);
+  if (!preferred) {
+    if (!sessionSources.length) {
+      resetLeftControllerState();
+    }
+    updateXRDebug({
+      note: 'inputsourceschange with no preferred source',
+      added: added.map((source) => ({
+        handedness: source.handedness,
+        hasGamepad: Boolean(source.gamepad),
+      })),
+      removed: removed.map((source) => ({
+        handedness: source.handedness,
+      })),
+      sources: sessionSources.map((source) => ({
+        handedness: source.handedness,
+        hasGamepad: Boolean(source.gamepad),
+      })),
+    });
+    return;
+  }
+  assignActiveInputSource(preferred, { reason: 'inputsourceschange' });
+}
+
+function handleXRSelectStart(event) {
+  const { inputSource } = event || {};
+  if (inputSource) {
+    assignActiveInputSource(inputSource, { reason: 'selectstart' });
+  }
+  xrLeftControllerState.triggerHeld = true;
+  updateXRDebug({
+    note: 'selectstart event',
+    triggerHeld: true,
+  });
+}
+
+function handleXRSelectEnd(event) {
+  if (event?.inputSource && !isSameInputSource(event.inputSource, xrLeftControllerState.inputSource)) {
+    return;
+  }
+  xrLeftControllerState.triggerHeld = false;
+  xrLeftControllerState.rotating = false;
+  xrLeftControllerState.lastRotatePosition = null;
+  updateXRDebug({
+    note: 'selectend event',
+    triggerHeld: false,
+  });
+}
+
+function handleXRSqueezeStart(event) {
+  const { inputSource } = event || {};
+  if (inputSource) {
+    assignActiveInputSource(inputSource, { reason: 'squeezestart' });
+  }
+  xrLeftControllerState.gripHeld = true;
+  updateXRDebug({
+    note: 'squeezestart event',
+    gripHeld: true,
+  });
+}
+
+function handleXRSqueezeEnd(event) {
+  if (event?.inputSource && !isSameInputSource(event.inputSource, xrLeftControllerState.inputSource)) {
+    return;
+  }
+  xrLeftControllerState.gripHeld = false;
+  xrLeftControllerState.dragging = false;
+  updateXRDebug({
+    note: 'squeezeend event',
+    gripHeld: false,
+  });
+}
+
+function handleXRInput({ frame, session, referenceSpace, deltaTime = 0 }) {
+  if (!session || !referenceSpace) {
+    return;
+  }
+
+  const sources = Array.from(session.inputSources || []);
+  if (xrLeftControllerState.inputSource && !sources.includes(xrLeftControllerState.inputSource)) {
+    xrLeftControllerState.inputSource = null;
+  }
+
+  if (!xrLeftControllerState.inputSource) {
+    const preferred = selectPreferredInputSource(sources);
+    if (preferred) {
+      assignActiveInputSource(preferred, { reason: 'frame-select' });
+    }
+  }
+
+  const activeSource = xrLeftControllerState.inputSource;
+
+  if (!activeSource) {
+    resetLeftControllerState();
+    updateXRDebug({
+      note: 'no usable input source',
+      sources: sources.map((source) => ({
+        handedness: source.handedness,
+        hasGamepad: Boolean(source.gamepad),
+      })),
+    });
+    return;
+  }
+
+  const poseSpace = activeSource.gripSpace || activeSource.targetRaySpace;
+  if (!poseSpace) {
+    resetLeftControllerState({ keepSource: true });
+    updateXRDebug({
+      note: 'no pose space',
+      handedness: activeSource.handedness,
+    });
+    return;
+  }
+
+  const pose = frame.getPose(poseSpace, referenceSpace);
+  if (!pose) {
+    resetLeftControllerState({ keepSource: true });
+    updateXRDebug({
+      note: 'no pose',
+      handedness: activeSource.handedness,
+    });
+    return;
+  }
+
+  const { orientation, position } = pose.transform;
+  const { gamepad } = activeSource;
+
+  const triggerPressed = xrLeftControllerState.triggerHeld || Boolean(gamepad && gamepad.buttons && gamepad.buttons[0]?.pressed);
+  const gripPressed = xrLeftControllerState.gripHeld || Boolean(gamepad && gamepad.buttons && gamepad.buttons[1]?.pressed);
+
+  const euler = orientation ? quaternionToEuler(orientation) : null;
+  if (euler && !xrLeftControllerState.lastEuler) {
+    xrLeftControllerState.lastEuler = euler;
+  }
+
+  if (!triggerPressed) {
+    xrLeftControllerState.rotating = false;
+    xrLeftControllerState.lastRotatePosition = null;
+  }
+
+  const currentPosition = position ? { x: position.x, y: position.y, z: position.z } : null;
+
+  if (triggerPressed) {
+    let rotationHandled = false;
+    if (currentPosition) {
+      if (xrLeftControllerState.lastRotatePosition) {
+        const dxMeters = currentPosition.x - xrLeftControllerState.lastRotatePosition.x;
+        const dyMeters = currentPosition.y - xrLeftControllerState.lastRotatePosition.y;
+        const dzMeters = currentPosition.z - xrLeftControllerState.lastRotatePosition.z;
+        const dx = dxMeters * XR_ROTATION_PIXEL_SCALE;
+        const dy = -dyMeters * XR_ROTATION_PIXEL_SCALE;
+        if (Number.isFinite(dx) && Number.isFinite(dy)) {
+          applyRotationDelta(dx, dy);
+          rotationHandled = Math.abs(dx) > 0.0001 || Math.abs(dy) > 0.0001;
+        }
+        if (Number.isFinite(dzMeters)) {
+          applyScaleDelta(dzMeters);
+        }
+      }
+      xrLeftControllerState.lastRotatePosition = currentPosition;
+      xrLeftControllerState.rotating = rotationHandled || xrLeftControllerState.rotating;
+    }
+
+    if (!rotationHandled && euler) {
+      if (!xrLeftControllerState.rotating || !xrLeftControllerState.lastEuler) {
+        xrLeftControllerState.rotating = true;
+      } else {
+        const deltaYaw = normalizeAngle(euler.yaw - xrLeftControllerState.lastEuler.yaw);
+        const deltaPitch = euler.pitch - xrLeftControllerState.lastEuler.pitch;
+        if (Number.isFinite(deltaYaw) && Number.isFinite(deltaPitch)) {
+          const dx = deltaYaw / POINTER_ROTATION_SENSITIVITY;
+          const dy = deltaPitch / POINTER_ROTATION_SENSITIVITY;
+          applyRotationDelta(dx, dy);
+          rotationHandled = Math.abs(dx) > 0.0001 || Math.abs(dy) > 0.0001;
+        }
+      }
+    }
+
+    if (rotationHandled) {
+      xrLeftControllerState.rotating = true;
+    }
+  }
+
+  if (euler) {
+    xrLeftControllerState.lastEuler = euler;
+  }
+
+  if (currentPosition) {
+    if (gripPressed) {
+      if (!xrLeftControllerState.dragging || !xrLeftControllerState.lastPosition) {
+        xrLeftControllerState.dragging = true;
+      } else {
+        const dxMeters = currentPosition.x - xrLeftControllerState.lastPosition.x;
+        const dyMeters = currentPosition.y - xrLeftControllerState.lastPosition.y;
+        const dzMeters = currentPosition.z - xrLeftControllerState.lastPosition.z;
+        const dx = dxMeters * XR_TRANSLATION_PIXEL_SCALE;
+        const dy = -dyMeters * XR_TRANSLATION_PIXEL_SCALE;
+        if (Number.isFinite(dx) && Number.isFinite(dy)) {
+          applyTranslationDelta(dx, dy);
+        }
+        if (Number.isFinite(dzMeters) && Math.abs(dzMeters) > 0.00001) {
+          const dz = dzMeters * XR_TRANSLATION_Z_SCALE;
+          applyTranslationZDelta(dz);
+        }
+      }
+      xrLeftControllerState.lastPosition = currentPosition;
+    } else {
+      xrLeftControllerState.dragging = false;
+      xrLeftControllerState.lastPosition = currentPosition;
+    }
+  } else {
+    xrLeftControllerState.dragging = false;
+    xrLeftControllerState.lastPosition = null;
+  }
+
+  const stick = getDominantStick(gamepad);
+  if (Math.abs(stick.x) > XR_STICK_DEADZONE) {
+    applyFovDelta(stick.x * XR_FOV_DELTA_PER_FRAME);
+  }
+  if (Math.abs(stick.y) > XR_STICK_DEADZONE) {
+    applyMagnificationDelta(-stick.y * XR_MAG_DELTA_PER_FRAME);
+  }
+
+  xrLeftControllerState.farAdjust = computeFarAdjust(gamepad);
+  if (deltaTime > 0 && xrLeftControllerState.farAdjust !== 0) {
+    applyFarClipDelta(xrLeftControllerState.farAdjust * XR_FAR_DELTA_PER_SEC * deltaTime);
+  }
+
+  updateXRDebug({
+    handedness: activeSource.handedness,
+    hasGamepad: Boolean(gamepad),
+    buttons: gamepad ? gamepad.buttons.map((button) => ({
+      value: button.value,
+      pressed: button.pressed,
+    })) : null,
+    axes: gamepad ? [...gamepad.axes] : null,
+    triggerPressed,
+    gripPressed,
+    stickX: stick.x,
+    stickY: stick.y,
+    stickPair: stick.pair,
+    rotation: { ...xrLeftControllerState.lastEuler },
+    position: xrLeftControllerState.lastPosition ? { ...xrLeftControllerState.lastPosition } : null,
+    rotating: xrLeftControllerState.rotating,
+    dragging: xrLeftControllerState.dragging,
+    triggerHeld: xrLeftControllerState.triggerHeld,
+    gripHeld: xrLeftControllerState.gripHeld,
+    sourceCount: sources.length,
+    geomFov: state.meshConfig.geomFov,
+    magnification: state.options.magnification,
+    scale: state.controls.scale,
+    translation: {
+      x: state.controls.translationX,
+      y: state.controls.translationY,
+      z: state.controls.translationZ,
+    },
+    farClip: state.options.farClip,
+    farAdjust: xrLeftControllerState.farAdjust,
+  });
+}
+
+function quaternionToEuler(q) {
+  if (!q) {
+    return null;
+  }
+  const { x, y, z, w } = q;
+  const sinrCosp = 2 * (w * x + y * z);
+  const cosrCosp = 1 - 2 * (x * x + y * y);
+  const roll = Math.atan2(sinrCosp, cosrCosp);
+
+  const sinp = 2 * (w * y - z * x);
+  const pitch = Math.abs(sinp) >= 1 ? Math.sign(sinp) * (Math.PI / 2) : Math.asin(sinp);
+
+  const sinyCosp = 2 * (w * z + x * y);
+  const cosyCosp = 1 - 2 * (y * y + z * z);
+  const yaw = Math.atan2(sinyCosp, cosyCosp);
+
+  return { roll, pitch, yaw };
+}
+
+function normalizeAngle(angle) {
+  if (!Number.isFinite(angle)) {
+    return 0;
+  }
+  const twoPi = Math.PI * 2;
+  let value = angle;
+  while (value <= -Math.PI) {
+    value += twoPi;
+  }
+  while (value > Math.PI) {
+    value -= twoPi;
+  }
+  return value;
 }
 
 function attachDropListeners() {
@@ -861,9 +1390,23 @@ function setupXR() {
       updateXRButtons();
       if (state.xr.active) {
         setUiHidden(true);
+      } else {
+        setUiHidden(false);
+        resetLeftControllerState();
+        updateXRDebug({ note: 'xr session inactive' });
       }
     },
+    onInputFrame: handleXRInput,
+    onInputSourcesChange: handleXRInputSourcesChange,
+    onSelectStart: handleXRSelectStart,
+    onSelectEnd: handleXRSelectEnd,
+    onSqueezeStart: handleXRSqueezeStart,
+    onSqueezeEnd: handleXRSqueezeEnd,
   });
+
+  if (typeof window !== 'undefined') {
+    window.xrManager = xrManager;
+  }
 
   enterVrButton.addEventListener('click', () => {
     if (state.xr.active && state.xr.mode === 'vr') {
