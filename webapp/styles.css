@@ -101,6 +101,12 @@ header .subtitle {
   margin-bottom: 24px;
 }
 
+.xr-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 .control {
   display: flex;
   flex-direction: column;
@@ -197,6 +203,18 @@ header .subtitle {
   padding: 6px 8px;
   color: var(--muted);
   cursor: pointer;
+}
+
+.hint-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.hint-toggle input {
+  margin: 0;
 }
 
 .control.grouped .file-label span {

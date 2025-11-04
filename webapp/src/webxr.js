@@ -18,6 +18,7 @@ export class WebXRManager {
       onSelectEnd = null,
       onSqueezeStart = null,
       onSqueezeEnd = null,
+      onAfterViewRender = null,
     } = options;
     this.renderer = renderer;
     this.canvas = canvas;
@@ -43,6 +44,7 @@ export class WebXRManager {
     this.prevXRTime = null;
     this.lastSessionLabel = null;
     this.polyfillActive = false;
+    this.onAfterViewRender = typeof onAfterViewRender === 'function' ? onAfterViewRender : null;
   }
 
   async detectSupport() {
@@ -138,6 +140,7 @@ export class WebXRManager {
         Object.defineProperty(window.navigator, 'xr', {
           value: this.nativeXR,
           configurable: true,
+          writable: true,
         });
       }
     } catch (error) {
@@ -352,11 +355,37 @@ export class WebXRManager {
     const modelMatrix = this.getModelMatrix();
     pose.views.forEach((view, index) => {
       const viewport = baseLayer.getViewport(view);
-      this.renderer.render(modelMatrix, view.transform.inverse.matrix, view.projectionMatrix, {
+      const viewMatrix = view.transform.inverse.matrix;
+      const projectionMatrix = view.projectionMatrix;
+      this.renderer.render(modelMatrix, viewMatrix, projectionMatrix, {
         viewport: [viewport.x, viewport.y, viewport.width, viewport.height],
         clearColor: index === 0,
         clearDepth: index === 0,
       });
+
+      if (this.onAfterViewRender) {
+        try {
+          const transform = view.transform;
+          this.onAfterViewRender({
+            frame,
+            view,
+            viewport: {
+              x: viewport.x,
+              y: viewport.y,
+              width: viewport.width,
+              height: viewport.height,
+            },
+            viewMatrix,
+            projectionMatrix,
+            position: transform.position,
+            orientation: transform.orientation,
+            time,
+            deltaTime,
+          });
+        } catch (error) {
+          console.warn('WebXR after-view handler error', error);
+        }
+      }
     });
 
     if (this.onInputFrame) {

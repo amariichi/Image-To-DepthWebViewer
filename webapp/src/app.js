@@ -7,6 +7,7 @@ import {
 } from './geometry.js';
 import { createRenderer, mat4 } from './rendering.js';
 import WebXRManager from './webxr.js';
+import XRHintOverlay from './xr-hints.js';
 import { createGlbBlob } from './gltf-exporter.js';
 
 const sourceInput = document.getElementById('source-input');
@@ -23,6 +24,7 @@ const geomFovInput = document.getElementById('geom-fov');
 const displayModeInput = document.getElementById('display-mode');
 const enterVrButton = document.getElementById('enter-vr');
 const enterLookingGlassButton = document.getElementById('enter-looking-glass');
+const showXrHintsInput = document.getElementById('show-xr-hints');
 const stereoSeparationInput = document.getElementById('stereo-separation');
 const swapEyesInput = document.getElementById('swap-eyes');
 const magnificationInput = document.getElementById('magnification');
@@ -67,7 +69,7 @@ const FAR_MIN = 0.2;
 const FAR_AUTO_EXPANSION = 10;
 const GEOM_FOV_MIN = 15;
 const GEOM_FOV_MAX = 120;
-const GEOM_FOV_DEFAULT = 60;
+const GEOM_FOV_DEFAULT = 32;
 const FOV_MIN = 15;
 const FOV_MAX = 120;
 const FOV_DEFAULT = 60;
@@ -99,6 +101,8 @@ try {
   throw error;
 }
 
+const xrHints = new XRHintOverlay(renderer.gl);
+let xrHintsEnabled = true;
 let xrManager = null;
 
 const xrLeftControllerState = {
@@ -110,6 +114,7 @@ const xrLeftControllerState = {
   triggerHeld: false,
   gripHeld: false,
   lastRotatePosition: null,
+  showingOrbit: false,
   farAdjust: 0,
 };
 
@@ -122,10 +127,18 @@ function resetLeftControllerState(options = {}) {
   xrLeftControllerState.lastRotatePosition = null;
   xrLeftControllerState.triggerHeld = false;
   xrLeftControllerState.gripHeld = false;
+  xrLeftControllerState.showingOrbit = false;
   xrLeftControllerState.farAdjust = 0;
   if (!keepSource) {
     xrLeftControllerState.inputSource = null;
   }
+}
+
+function showXrHint(label, value = null) {
+  if (!xrHintsEnabled || !xrHints || !state.xr.active || state.xr.mode !== 'vr') {
+    return;
+  }
+  xrHints.showAction(label, value);
 }
 
 function updateXRDebug(payload) {
@@ -776,8 +789,11 @@ function applyTranslationDelta(dx, dy) {
   const sizeFactor = state.baseBounds ? Math.max(state.baseBounds.sizeX, state.baseBounds.sizeY, 0.1) : 1;
   const movementScale = Math.min(sizeFactor + 0.3, 10);
   const factor = 0.0003 * movementScale * (state.controls.scale + 0.2);
+  const prevX = state.controls.translationX;
+  const prevY = state.controls.translationY;
   state.controls.translationX += dx * factor;
   state.controls.translationY -= dy * factor;
+  return prevX !== state.controls.translationX || prevY !== state.controls.translationY;
 }
 
 function applyTranslationZDelta(delta) {
@@ -798,44 +814,46 @@ function applyTranslationZDelta(delta) {
 
 function applyScaleFactor(factor) {
   if (!Number.isFinite(factor) || factor === 0) {
-    return;
+    return false;
   }
   const next = clamp(state.controls.scale * factor, MIN_SCALE, MAX_SCALE);
   if (next === state.controls.scale) {
-    return;
+    return false;
   }
   state.controls.scale = next;
+  return true;
 }
 
 function applyScaleDelta(deltaMeters) {
   if (!Number.isFinite(deltaMeters) || Math.abs(deltaMeters) <= XR_TRIGGER_Z_DEADZONE) {
-    return;
+    return false;
   }
   const factor = Math.exp(-deltaMeters * XR_TRIGGER_SCALE_COEF * 0.001);
-  applyScaleFactor(factor);
+  return applyScaleFactor(factor);
 }
 
 function applyFovDelta(delta) {
   if (!Number.isFinite(delta) || delta === 0) {
-    return;
+    return false;
   }
   const current = state.meshConfig.geomFov ?? GEOM_FOV_DEFAULT;
   const next = clamp(current + delta, GEOM_FOV_MIN, GEOM_FOV_MAX);
   if (next === current) {
-    return;
+    return false;
   }
   setReconstructionFov(next, { rebuild: true, preserveView: true });
   syncMirrorControls();
+  return true;
 }
 
 function applyMagnificationDelta(deltaFraction) {
   if (!Number.isFinite(deltaFraction) || deltaFraction === 0) {
-    return;
+    return false;
   }
   const current = state.options.magnification;
   const next = clamp(current * (1 + deltaFraction), MAG_MIN, MAG_MAX);
   if (next === current) {
-    return;
+    return false;
   }
   state.options.magnification = next;
   if (magnificationInput) {
@@ -844,25 +862,28 @@ function applyMagnificationDelta(deltaFraction) {
   updateBinding('magnificationValue', next.toFixed(2));
   updateDepthTransform();
   syncMirrorControls();
+  return true;
 }
 
 function computeFarAdjust(gamepad) {
   if (!gamepad || !Array.isArray(gamepad.buttons)) {
     return 0;
   }
-  const decrement = Number(gamepad.buttons[4]?.pressed) || Number(gamepad.buttons[4]?.value > 0.5) || 0; // X button (left controller)
-  const increment = Number(gamepad.buttons[5]?.pressed) || Number(gamepad.buttons[5]?.value > 0.5) || 0; // Y button
+  const xButton = gamepad.buttons[4] || { pressed: false, value: 0 };
+  const yButton = gamepad.buttons[5] || { pressed: false, value: 0 };
+  const decrement = xButton.pressed || (xButton.value ?? 0) > 0.5 ? 1 : 0;
+  const increment = yButton.pressed || (yButton.value ?? 0) > 0.5 ? 1 : 0;
   return increment - decrement;
 }
 
 function applyFarClipDelta(delta) {
   if (!Number.isFinite(delta) || delta === 0) {
-    return;
+    return false;
   }
   const current = state.options.farClip;
   const next = clamp(current + delta, FAR_MIN, FAR_MAX);
   if (next === current) {
-    return;
+    return false;
   }
   state.options.farClip = next;
   updateBinding('farClipValue', formatFarClip(next));
@@ -871,6 +892,8 @@ function applyFarClipDelta(delta) {
   }
   updateDepthTransform();
   syncMirrorControls();
+  showXrHint('Far Clip', formatFarClip(next));
+  return true;
 }
 
 function getDominantStick(gamepad) {
@@ -1056,6 +1079,10 @@ function handleXRInput({ frame, session, referenceSpace, deltaTime = 0 }) {
     return;
   }
 
+  if (xrHintsEnabled && deltaTime > 0) {
+    xrHints.update(deltaTime);
+  }
+
   const sources = Array.from(session.inputSources || []);
   if (xrLeftControllerState.inputSource && !sources.includes(xrLeftControllerState.inputSource)) {
     xrLeftControllerState.inputSource = null;
@@ -1116,6 +1143,9 @@ function handleXRInput({ frame, session, referenceSpace, deltaTime = 0 }) {
   if (!triggerPressed) {
     xrLeftControllerState.rotating = false;
     xrLeftControllerState.lastRotatePosition = null;
+    if (xrLeftControllerState.showingOrbit) {
+      xrLeftControllerState.showingOrbit = false;
+    }
   }
 
   const currentPosition = position ? { x: position.x, y: position.y, z: position.z } : null;
@@ -1134,7 +1164,9 @@ function handleXRInput({ frame, session, referenceSpace, deltaTime = 0 }) {
           rotationHandled = Math.abs(dx) > 0.0001 || Math.abs(dy) > 0.0001;
         }
         if (Number.isFinite(dzMeters)) {
-          applyScaleDelta(dzMeters);
+          if (applyScaleDelta(dzMeters)) {
+            showXrHint('Zoom', `${state.controls.scale.toFixed(2)}×`);
+          }
         }
       }
       xrLeftControllerState.lastRotatePosition = currentPosition;
@@ -1158,6 +1190,10 @@ function handleXRInput({ frame, session, referenceSpace, deltaTime = 0 }) {
 
     if (rotationHandled) {
       xrLeftControllerState.rotating = true;
+      if (!xrLeftControllerState.showingOrbit) {
+        showXrHint('Orbit / Zoom');
+        xrLeftControllerState.showingOrbit = true;
+      }
     }
   }
 
@@ -1176,7 +1212,9 @@ function handleXRInput({ frame, session, referenceSpace, deltaTime = 0 }) {
         const dx = dxMeters * XR_TRANSLATION_PIXEL_SCALE;
         const dy = -dyMeters * XR_TRANSLATION_PIXEL_SCALE;
         if (Number.isFinite(dx) && Number.isFinite(dy)) {
-          applyTranslationDelta(dx, dy);
+          if (applyTranslationDelta(dx, dy)) {
+            showXrHint('Pan');
+          }
         }
         if (Number.isFinite(dzMeters) && Math.abs(dzMeters) > 0.00001) {
           const dz = dzMeters * XR_TRANSLATION_Z_SCALE;
@@ -1195,10 +1233,14 @@ function handleXRInput({ frame, session, referenceSpace, deltaTime = 0 }) {
 
   const stick = getDominantStick(gamepad);
   if (Math.abs(stick.x) > XR_STICK_DEADZONE) {
-    applyFovDelta(stick.x * XR_FOV_DELTA_PER_FRAME);
+    if (applyFovDelta(stick.x * XR_FOV_DELTA_PER_FRAME)) {
+      showXrHint('Geometry FOV', `${state.meshConfig.geomFov.toFixed(0)}°`);
+    }
   }
   if (Math.abs(stick.y) > XR_STICK_DEADZONE) {
-    applyMagnificationDelta(-stick.y * XR_MAG_DELTA_PER_FRAME);
+    if (applyMagnificationDelta(-stick.y * XR_MAG_DELTA_PER_FRAME)) {
+      showXrHint('Depth Magnification', `${state.options.magnification.toFixed(2)}×`);
+    }
   }
 
   xrLeftControllerState.farAdjust = computeFarAdjust(gamepad);
@@ -1373,6 +1415,17 @@ function setupXR() {
   if (!enterVrButton || !enterLookingGlassButton) {
     return;
   }
+  if (showXrHintsInput) {
+    xrHintsEnabled = showXrHintsInput.checked;
+    showXrHintsInput.addEventListener('change', (event) => {
+      xrHintsEnabled = event.target.checked;
+      if (!xrHintsEnabled) {
+        xrHints.onSessionEnd();
+      } else if (state.xr.active && state.xr.mode === 'vr') {
+        xrHints.onSessionStart();
+      }
+    });
+  }
   xrManager = new WebXRManager({
     renderer,
     canvas,
@@ -1382,6 +1435,8 @@ function setupXR() {
       updateBinding('xrStatus', label);
     },
     onStateChange: (updates) => {
+      const prevActive = state.xr.active;
+      const prevMode = state.xr.mode;
       state.xr = { ...state.xr, ...updates };
       if (!state.xr.supported && !state.xr.active) {
         state.xr.status = 'WebXR unavailable';
@@ -1390,18 +1445,33 @@ function setupXR() {
       updateXRButtons();
       if (state.xr.active) {
         setUiHidden(true);
+        if (state.xr.mode === 'vr' && xrHintsEnabled && (!prevActive || prevMode !== 'vr')) {
+          xrHints.onSessionStart();
+        }
+        if (state.xr.mode !== 'vr') {
+          xrHints.onSessionEnd();
+        }
       } else {
         setUiHidden(false);
         resetLeftControllerState();
         updateXRDebug({ note: 'xr session inactive' });
+        xrHints.onSessionEnd();
       }
     },
-    onInputFrame: handleXRInput,
+    onInputFrame: (payload) => {
+      handleXRInput(payload);
+    },
     onInputSourcesChange: handleXRInputSourcesChange,
     onSelectStart: handleXRSelectStart,
     onSelectEnd: handleXRSelectEnd,
     onSqueezeStart: handleXRSqueezeStart,
     onSqueezeEnd: handleXRSqueezeEnd,
+    onAfterViewRender: ({ viewMatrix, projectionMatrix, viewport, position, orientation }) => {
+      if (!xrHintsEnabled || state.xr.mode !== 'vr') {
+        return;
+      }
+      xrHints.draw({ viewMatrix, projectionMatrix, viewport, position, orientation });
+    },
   });
 
   if (typeof window !== 'undefined') {

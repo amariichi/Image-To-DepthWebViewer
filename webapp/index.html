@@ -44,14 +44,20 @@
         <div class="control column">
           <span>XR Sessions</span>
           <div class="actions stack">
-            <button id="enter-vr" type="button">Enter VR</button>
+            <div class="xr-row">
+              <button id="enter-vr" type="button">Enter VR</button>
+              <label class="hint-toggle">
+                <input id="show-xr-hints" type="checkbox" checked />
+                <span>Show XR hints</span>
+              </label>
+            </div>
             <button id="enter-looking-glass" type="button">Enter Looking Glass</button>
           </div>
           <p class="hint" data-bind="xrStatus">WebXR: checking…</p>
         </div>
         <div class="control">
-          <label for="geom-fov">Geometry FOV <span data-bind="geomFovValue">60</span>°</label>
-          <input id="geom-fov" data-sync="geomFov" type="range" min="15" max="120" step="1" value="60" />
+          <label for="geom-fov">Geometry FOV <span data-bind="geomFovValue">32</span>°</label>
+          <input id="geom-fov" data-sync="geomFov" type="range" min="15" max="120" step="1" value="32" />
         </div>
         <div class="control">
           <label for="stereo-separation">Stereo Separation <span data-bind="stereoValue">0.02</span> m</label>
