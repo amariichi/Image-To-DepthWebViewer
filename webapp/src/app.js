@@ -782,6 +782,8 @@ function attachUIListeners() {
     state.controls.translationZ = clamped;
     updateBinding('zOffsetValue', clamped.toFixed(2));
     syncMirrorControls();
+    invalidateModelMatrix();
+    requestRender();
   });
 
   farClipInput.addEventListener('input', (event) => {
