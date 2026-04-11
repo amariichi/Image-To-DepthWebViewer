@@ -185,7 +185,6 @@ export class WebXRManager {
           }
           const merged = { ...(LookingGlassConfig || {}), ...config };
           // Instantiate polyfill once. Subsequent calls reuse existing session.
-          // eslint-disable-next-line no-new
           new LookingGlassWebXRPolyfill(merged);
           this.polyfillActive = true;
           this.xr = navigator.xr || this.xr;

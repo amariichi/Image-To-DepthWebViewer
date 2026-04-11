@@ -2,9 +2,9 @@ import {
   decodeRgbdeFile,
   findBestMeshSize,
   generatePerspectiveMesh,
-  updateVertexPositions,
   DEFAULT_CENTER_Z,
 } from './geometry.js';
+import { computeDeformedBounds, createDeformedPositions } from './mesh-evaluator.js';
 import { createRenderer, mat4 } from './rendering.js';
 import WebXRManager from './webxr.js';
 import XRHintOverlay from './xr-hints.js';
@@ -78,8 +78,9 @@ const GENERATE_LABEL_BUSY = 'Generating…';
 const SAVE_LABEL_GENERATED = 'Save RGBDE';
 const SAVE_LABEL_EXISTING = 'Download RGBDE';
 const STEREO_MIN = 0;
-const STEREO_MAX = 0.1;
-const STEREO_DEFAULT = 0.02;
+const STEREO_MAX = 0.2;
+const STEREO_DEFAULT = 0.065;
+const STEREO_CONVERGENCE_MIN = 0.25;
 const BACKEND_TIMEOUT_MS = 7000;
 const POINTER_ROTATION_SENSITIVITY = (Math.PI / 180) * 0.04;
 const POINTER_MAX_ANGLE = Math.PI / 6;
@@ -226,6 +227,7 @@ const state = {
   initialScale: 1.0,
   autoTranslationZ: 0.0,
   pivotZ: 0.0,
+  displayBounds: null,
   backend: {
     available: false,
     device: null,
@@ -248,6 +250,12 @@ const state = {
   processing: false,
   uiHidden: false,
   sourceLabel: 'No file selected',
+  loadRequestId: 0,
+  render: {
+    pending: false,
+    modelMatrixDirty: true,
+    modelMatrix: mat4.identity(),
+  },
 };
 
 function init() {
@@ -275,11 +283,29 @@ function init() {
   checkBackend();
   resetView();
   resizeCanvas();
-  requestAnimationFrame(renderLoop);
+  requestRender();
 }
 
 function resizeCanvas() {
   renderer.resize(window.innerWidth, window.innerHeight);
+  requestRender();
+}
+
+function invalidateModelMatrix() {
+  state.render.modelMatrixDirty = true;
+}
+
+function requestRender() {
+  if (state.xr.active || state.render.pending) {
+    return;
+  }
+  state.render.pending = true;
+  requestAnimationFrame(renderFrame);
+}
+
+function renderFrame() {
+  state.render.pending = false;
+  renderScene();
 }
 
 async function handleFiles(input, meta = {}) {
@@ -293,9 +319,13 @@ async function handleFiles(input, meta = {}) {
     file = input.length > 0 ? input[0] : null;
   }
   if (!file) return false;
+  const requestId = ++state.loadRequestId;
   try {
     showStatus('Loading…');
     const data = await decodeRgbdeFile(file);
+    if (requestId !== state.loadRequestId) {
+      return false;
+    }
     state.rgbde = data;
     state.is360 = /\.360\./i.test(file.name);
     const { width, height } = data;
@@ -322,8 +352,8 @@ async function handleFiles(input, meta = {}) {
       fovDegrees: currentGeomFov,
     });
     state.mesh = mesh;
-    console.info('Mesh depth sample', mesh.baseDepths.slice(0, 10));
     renderer.updateGeometry(mesh);
+    renderer.setDepthOptions(mesh, state.options);
     renderer.setTexture(data.textureImage);
     updateGlbButtonState();
     state.baseBounds = computeBaseBounds(mesh);
@@ -351,6 +381,9 @@ async function handleFiles(input, meta = {}) {
     showStatus(`Loaded ${file.name} (${width}×${height})`);
     return true;
   } catch (error) {
+    if (requestId !== state.loadRequestId) {
+      return false;
+    }
     console.error(error);
     const message = error.message || 'Failed to load RGBDE file.';
     if (/RGBDE PNG must have even width/i.test(message) || /Unable to determine mesh density/i.test(message)) {
@@ -440,7 +473,10 @@ async function saveCurrentMeshAsGlb() {
     const baseName = getExportBaseName();
     const textureFileName = `${baseName || 'depth_export'}.png`;
     const blob = await createGlbBlob({
-      mesh: state.mesh,
+      mesh: {
+        ...state.mesh,
+        positions: createDeformedPositions(state.mesh, state.options),
+      },
       modelMatrix,
       meshName: baseName,
       includeUVs: Boolean(state.mesh.uvs),
@@ -518,7 +554,7 @@ async function requestDepthGeneration(file) {
       method: 'POST',
       body: form,
     });
-  } catch (error) {
+  } catch {
     throw new Error('Depth service unreachable. Check that the backend is running.');
   }
   if (!response.ok) {
@@ -630,9 +666,10 @@ function updateDepthTransform(options = {}) {
     farClipInput.value = String(farClipToSlider(clampedFar));
     updateBinding('farClipValue', formatFarClip(clampedFar));
   }
-  updateVertexPositions(state.mesh, state.options);
-  renderer.updatePositions(state.mesh);
-  refreshAutoFit({ resetTranslation: Boolean(options.resetTranslation) });
+  renderer.setDepthOptions(state.mesh, state.options);
+  const bounds = computeDeformedBounds(state.mesh, state.options);
+  refreshAutoFit({ bounds, resetTranslation: Boolean(options.resetTranslation) });
+  requestRender();
 }
 
 function attachUIListeners() {
@@ -657,11 +694,13 @@ function attachUIListeners() {
     state.stereo.separation = value;
     updateBinding('stereoValue', value.toFixed(3));
     syncMirrorControls();
+    requestRender();
   });
 
   swapEyesInput.addEventListener('change', (event) => {
     state.stereo.swapEyes = Boolean(event.target.checked);
     syncMirrorControls();
+    requestRender();
   });
 
   sourceInput.addEventListener('change', () => {
@@ -731,6 +770,7 @@ function attachUIListeners() {
     state.camera.fov = clamped;
     updateBinding('fovValue', Math.round(clamped).toString());
     syncMirrorControls();
+    requestRender();
   });
 
   zOffsetInput.addEventListener('input', (event) => {
@@ -783,6 +823,8 @@ function applyRotationDelta(dx, dy) {
     -POINTER_MAX_ANGLE,
     POINTER_MAX_ANGLE,
   );
+  invalidateModelMatrix();
+  requestRender();
 }
 
 function applyTranslationDelta(dx, dy) {
@@ -793,7 +835,12 @@ function applyTranslationDelta(dx, dy) {
   const prevY = state.controls.translationY;
   state.controls.translationX += dx * factor;
   state.controls.translationY -= dy * factor;
-  return prevX !== state.controls.translationX || prevY !== state.controls.translationY;
+  const changed = prevX !== state.controls.translationX || prevY !== state.controls.translationY;
+  if (changed) {
+    invalidateModelMatrix();
+    requestRender();
+  }
+  return changed;
 }
 
 function applyTranslationZDelta(delta) {
@@ -805,11 +852,13 @@ function applyTranslationZDelta(delta) {
     return;
   }
   state.controls.translationZ = next;
+  invalidateModelMatrix();
   if (zOffsetInput) {
     zOffsetInput.value = next.toFixed(2);
   }
   updateBinding('zOffsetValue', next.toFixed(2));
   syncMirrorControls();
+  requestRender();
 }
 
 function applyScaleFactor(factor) {
@@ -821,6 +870,8 @@ function applyScaleFactor(factor) {
     return false;
   }
   state.controls.scale = next;
+  invalidateModelMatrix();
+  requestRender();
   return true;
 }
 
@@ -930,6 +981,8 @@ function applyWheelDelta(deltaY) {
   }
   const factor = Math.exp(-deltaY * 0.001);
   state.controls.scale = clamp(state.controls.scale * factor, MIN_SCALE, MAX_SCALE);
+  invalidateModelMatrix();
+  requestRender();
 }
 
 function attachPointerListeners() {
@@ -1409,6 +1462,7 @@ function setDisplayMode(mode) {
   syncMirrorControls();
   syncMirrorScroll();
   updateMirrorVisibility();
+  requestRender();
 }
 
 function setupXR() {
@@ -1456,6 +1510,7 @@ function setupXR() {
         resetLeftControllerState();
         updateXRDebug({ note: 'xr session inactive' });
         xrHints.onSessionEnd();
+        requestRender();
       }
     },
     onInputFrame: (payload) => {
@@ -1621,18 +1676,24 @@ function updateMirrorVisibility() {
 }
 
 function computeModelMatrix() {
-  let model = mat4.identity();
+  if (!state.render.modelMatrixDirty) {
+    return state.render.modelMatrix;
+  }
+
+  const model = state.render.modelMatrix;
   const translateZ = state.controls.translationZ + state.autoTranslationZ;
-  model = mat4.translate(model, [state.controls.translationX, state.controls.translationY, translateZ]);
-  model = mat4.translate(model, [0, 0, state.pivotZ]);
-  model = mat4.rotateY(model, state.controls.rotationY);
-  model = mat4.rotateX(model, state.controls.rotationX);
-  model = mat4.scale(model, state.controls.scale);
-  model = mat4.translate(model, [0, 0, -state.pivotZ]);
+  mat4.identityInto(model);
+  mat4.translateInPlace(model, [state.controls.translationX, state.controls.translationY, translateZ]);
+  mat4.translateInPlace(model, [0, 0, state.pivotZ]);
+  mat4.rotateYInPlace(model, state.controls.rotationY);
+  mat4.rotateXInPlace(model, state.controls.rotationX);
+  mat4.scaleInPlace(model, state.controls.scale);
+  mat4.translateInPlace(model, [0, 0, -state.pivotZ]);
+  state.render.modelMatrixDirty = false;
   return model;
 }
 
-function renderLoop() {
+function renderScene() {
   if (!state.xr.active) {
     renderer.gl.bindFramebuffer(renderer.gl.FRAMEBUFFER, null);
   }
@@ -1645,10 +1706,11 @@ function renderLoop() {
     const farPlane = Math.max(farClip * state.controls.scale * 1.5, 1000);
     const fovRadians = (state.camera.fov * Math.PI) / 180;
     const isStereo = state.stereo.mode === 'sbs';
+    const nearPlane = 0.01;
     const projection = mat4.perspective(
       fovRadians,
       isStereo ? stereoAspect : monoAspect,
-      0.01,
+      nearPlane,
       farPlane
     );
 
@@ -1663,12 +1725,29 @@ function renderLoop() {
       });
     } else {
       const halfWidth = Math.floor(width / 2);
-      const separation = clamp(state.stereo.separation, STEREO_MIN, STEREO_MAX);
-      const rawRadius = state.baseBounds ? Math.max(state.baseBounds.radius || 1, 0.0001) : 1;
-      const scaleRadius = Math.max(0.1, Math.min(Math.pow(rawRadius, 0.75), 12.0));
-      const offset = separation * scaleRadius;
-      const leftCam = -offset / 2;
-      const rightCam = offset / 2;
+      const eyeSeparation = clamp(state.stereo.separation, STEREO_MIN, STEREO_MAX);
+      const convergence = computeStereoConvergenceDistance(model);
+      const top = Math.tan(fovRadians / 2) * nearPlane;
+      const right = top * stereoAspect;
+      const frustumShift = (eyeSeparation * 0.5 * nearPlane) / convergence;
+      const leftProjection = mat4.frustum(
+        -right + frustumShift,
+        right + frustumShift,
+        -top,
+        top,
+        nearPlane,
+        farPlane,
+      );
+      const rightProjection = mat4.frustum(
+        -right - frustumShift,
+        right - frustumShift,
+        -top,
+        top,
+        nearPlane,
+        farPlane,
+      );
+      const leftCam = -eyeSeparation / 2;
+      const rightCam = eyeSeparation / 2;
       const leftView = mat4.translate(baseView, [-leftCam, 0, 0]);
       const rightView = mat4.translate(baseView, [-rightCam, 0, 0]);
       const leftViewport = [0, 0, halfWidth, height];
@@ -1676,20 +1755,20 @@ function renderLoop() {
 
       const eyes = state.stereo.swapEyes
         ? [
-            { view: rightView, viewport: leftViewport },
-            { view: leftView, viewport: rightViewport },
+            { view: rightView, projection: rightProjection, viewport: leftViewport },
+            { view: leftView, projection: leftProjection, viewport: rightViewport },
           ]
         : [
-            { view: leftView, viewport: leftViewport },
-            { view: rightView, viewport: rightViewport },
+            { view: leftView, projection: leftProjection, viewport: leftViewport },
+            { view: rightView, projection: rightProjection, viewport: rightViewport },
           ];
 
-      renderer.render(model, eyes[0].view, projection, {
+      renderer.render(model, eyes[0].view, eyes[0].projection, {
         viewport: eyes[0].viewport,
         clearColor: true,
         clearDepth: true,
       });
-      renderer.render(model, eyes[1].view, projection, {
+      renderer.render(model, eyes[1].view, eyes[1].projection, {
         viewport: eyes[1].viewport,
         clearColor: false,
         clearDepth: true,
@@ -1698,8 +1777,6 @@ function renderLoop() {
   } else if (!state.xr.active) {
     renderer.gl.clear(renderer.gl.COLOR_BUFFER_BIT | renderer.gl.DEPTH_BUFFER_BIT);
   }
-  syncMirrorControls();
-  requestAnimationFrame(renderLoop);
 }
 
 function updateBinding(key, value) {
@@ -1803,11 +1880,13 @@ function computeBounds(positions) {
   const sizeX = maxX - minX;
   const sizeY = maxY - minY;
   const sizeZ = maxZ - minZ;
+  const centerX = (minX + maxX) / 2;
+  const centerY = (minY + maxY) / 2;
   const centerZ = (minZ + maxZ) / 2;
   const maxSpan = Math.max(sizeX, sizeY, sizeZ);
   const radius = Math.max(sizeX, sizeY) * 0.5;
 
-  return { minX, maxX, minY, maxY, minZ, maxZ, sizeX, sizeY, sizeZ, centerZ, maxSpan, radius };
+  return { minX, maxX, minY, maxY, minZ, maxZ, sizeX, sizeY, sizeZ, centerX, centerY, centerZ, maxSpan, radius };
 }
 
 function computeBaseBounds(mesh) {
@@ -1830,6 +1909,8 @@ function computeBaseBounds(mesh) {
   const sizeX = maxX - minX;
   const sizeY = maxY - minY;
   const sizeZ = baseMaxZ - baseMinZ;
+  const centerX = (minX + maxX) / 2;
+  const centerY = (minY + maxY) / 2;
   const centerZ = (baseMinZ + baseMaxZ) / 2;
   return {
     minX,
@@ -1841,10 +1922,25 @@ function computeBaseBounds(mesh) {
     sizeX,
     sizeY,
     sizeZ,
+    centerX,
+    centerY,
     centerZ,
     maxSpan: Math.max(sizeX, sizeY, sizeZ),
     radius: Math.max(sizeX, sizeY) * 0.5,
   };
+}
+
+function computeStereoConvergenceDistance(modelMatrix) {
+  const bounds = state.displayBounds || state.baseBounds;
+  if (!bounds) {
+    return 2;
+  }
+  const [,, z] = mat4.transformPoint(modelMatrix, [
+    bounds.centerX || 0,
+    bounds.centerY || 0,
+    bounds.centerZ || 0,
+  ]);
+  return Math.max(STEREO_CONVERGENCE_MIN, -z);
 }
 
 function calculateInitialScale(bounds) {
@@ -1886,6 +1982,7 @@ function rebuildMesh({ preserveView = true, skipReset = false } = {}) {
 
   state.mesh = mesh;
   renderer.updateGeometry(mesh);
+  renderer.setDepthOptions(mesh, state.options);
   renderer.setTexture(textureImage);
   updateGlbButtonState();
   state.baseBounds = computeBaseBounds(mesh);
@@ -1911,6 +2008,7 @@ function refreshAutoFit({ bounds, resetTranslation = false } = {}) {
       info = computeBounds(state.mesh.positions);
     }
   }
+  state.displayBounds = info;
 
   const depthRange = Math.max(info.maxZ - info.minZ, 0.001);
   const pivotOffset = Math.min(1.0, depthRange * 0.15);
@@ -1934,6 +2032,7 @@ function refreshAutoFit({ bounds, resetTranslation = false } = {}) {
       updateBinding('zOffsetValue', adjusted.toFixed(2));
     }
   }
+  invalidateModelMatrix();
 }
 
 function applyInitialView() {

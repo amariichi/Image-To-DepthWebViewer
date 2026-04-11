@@ -4,14 +4,15 @@ import io
 import logging
 import unicodedata
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 from urllib.parse import quote
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from .depth_service import DepthProService, DepthResult, get_depth_service
+if TYPE_CHECKING:
+    from .depth_service import DepthProService
 
 logger = logging.getLogger(__name__)
 
@@ -41,13 +42,13 @@ async def status() -> JSONResponse:
 
 @app.post("/api/process")
 async def process_image(image: Annotated[UploadFile, File(...)]) -> StreamingResponse:
-    service: DepthProService = get_depth_service()
+    service = get_depth_service()
     content = await image.read()
     if not content:
         raise HTTPException(status_code=400, detail="No image payload received.")
 
     try:
-        result: DepthResult = await service.generate_rgbde(content, image.filename)
+        result = await service.generate_rgbde(content, image.filename)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # pragma: no cover - defensive logging
@@ -75,14 +76,20 @@ def build_download_headers(filename: str) -> dict[str, str]:
 
 
 def ascii_safe_filename(name: str) -> str:
-    normalized = unicodedata.normalize('NFKD', name or '')
-    ascii_name = normalized.encode('ascii', 'ignore').decode('ascii', 'ignore')
-    cleaned = ascii_name.replace('"', '').replace("'", '').strip()
-    cleaned = cleaned.replace('/', '_').replace('\\', '_')
-    cleaned = cleaned.lstrip('.')
-    path = Path(cleaned)
-    stem = path.stem or 'rgbde_result'
+    raw_name = (name or '').replace('\\', '/').split('/')[-1].strip()
+    path = Path(raw_name)
+    normalized_stem = unicodedata.normalize('NFKD', path.stem)
+    ascii_stem = normalized_stem.encode('ascii', 'ignore').decode('ascii', 'ignore')
+    stem = ascii_stem.replace('"', '').replace("'", '').strip()
+    stem = stem.replace('/', '_').replace('\\', '_')
+    stem = stem.strip('._ ') or 'rgbde_result'
     suffix = path.suffix.lower()
     if suffix != '.png':
         suffix = '.png'
     return f"{stem}{suffix}"
+
+
+def get_depth_service() -> "DepthProService":
+    from .depth_service import get_depth_service as _get_depth_service
+
+    return _get_depth_service()
