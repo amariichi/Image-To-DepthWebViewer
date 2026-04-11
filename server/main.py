@@ -16,7 +16,16 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="RGBDE Depth Service", version="0.1.0")
+
+def read_app_version() -> str:
+    version_path = Path(__file__).resolve().parents[1] / "VERSION"
+    try:
+        return version_path.read_text(encoding="utf-8").strip() or "0.0.0"
+    except OSError:
+        return "0.0.0"
+
+
+app = FastAPI(title="RGBDE Depth Service", version=read_app_version())
 
 app.add_middleware(
     CORSMiddleware,
