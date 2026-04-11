@@ -1,16 +1,33 @@
 const VERT_SOURCE = `#version 300 es
-layout(location = 0) in vec3 aPosition;
-layout(location = 1) in vec2 aUv;
+layout(location = 0) in vec3 aRayDirection;
+layout(location = 1) in float aBaseDepth;
+layout(location = 2) in vec2 aUv;
 
 uniform mat4 uModel;
 uniform mat4 uView;
 uniform mat4 uProjection;
+uniform float uMinDepth;
+uniform float uFarClip;
+uniform float uMagnification;
+uniform float uLogPower;
+uniform float uUseLog;
 
 out vec2 vUv;
 
 void main() {
+  const float MIN_DEPTH_CLAMP = 0.15;
+  const float DEPTH_OFFSET = 0.3;
+  float minDepth = max(uMinDepth, MIN_DEPTH_CLAMP);
+  float relative = max(aBaseDepth - minDepth + DEPTH_OFFSET, 0.001);
+  float shaped = aBaseDepth;
+  if (uUseLog > 0.5) {
+    shaped = minDepth + log(1.0 + pow(relative, uLogPower));
+  }
+  float scaled = minDepth + uMagnification * (shaped - minDepth);
+  float depth = clamp(scaled, minDepth + 0.001, uFarClip);
+  vec3 position = aRayDirection * depth;
   vUv = aUv;
-  gl_Position = uProjection * uView * uModel * vec4(aPosition, 1.0);
+  gl_Position = uProjection * uView * uModel * vec4(position, 1.0);
 }
 `;
 
@@ -36,23 +53,34 @@ export function createRenderer(canvas) {
 
   const program = createProgram(gl, VERT_SOURCE, FRAG_SOURCE);
   const attribLocations = {
-    position: 0,
-    uv: 1,
+    rayDirection: 0,
+    baseDepth: 1,
+    uv: 2,
   };
   const uniforms = {
     model: gl.getUniformLocation(program, 'uModel'),
     view: gl.getUniformLocation(program, 'uView'),
     projection: gl.getUniformLocation(program, 'uProjection'),
     texture: gl.getUniformLocation(program, 'uTexture'),
+    minDepth: gl.getUniformLocation(program, 'uMinDepth'),
+    farClip: gl.getUniformLocation(program, 'uFarClip'),
+    magnification: gl.getUniformLocation(program, 'uMagnification'),
+    logPower: gl.getUniformLocation(program, 'uLogPower'),
+    useLog: gl.getUniformLocation(program, 'uUseLog'),
   };
 
   const vao = gl.createVertexArray();
   gl.bindVertexArray(vao);
 
-  const positionBuffer = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
-  gl.enableVertexAttribArray(attribLocations.position);
-  gl.vertexAttribPointer(attribLocations.position, 3, gl.FLOAT, false, 0, 0);
+  const rayDirectionBuffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, rayDirectionBuffer);
+  gl.enableVertexAttribArray(attribLocations.rayDirection);
+  gl.vertexAttribPointer(attribLocations.rayDirection, 3, gl.FLOAT, false, 0, 0);
+
+  const baseDepthBuffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, baseDepthBuffer);
+  gl.enableVertexAttribArray(attribLocations.baseDepth);
+  gl.vertexAttribPointer(attribLocations.baseDepth, 1, gl.FLOAT, false, 0, 0);
 
   const uvBuffer = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, uvBuffer);
@@ -73,6 +101,13 @@ export function createRenderer(canvas) {
   gl.bindTexture(gl.TEXTURE_2D, null);
 
   let indexCount = 0;
+  const depthTransform = {
+    minDepth: 0.15,
+    farClip: 1000,
+    magnification: 1,
+    logPower: 1,
+    useLog: 0,
+  };
 
   gl.enable(gl.DEPTH_TEST);
   gl.clearColor(0, 0, 0, 1);
@@ -90,8 +125,11 @@ export function createRenderer(canvas) {
   function updateGeometry(mesh) {
     gl.bindVertexArray(vao);
 
-    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, mesh.positions, gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, rayDirectionBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, mesh.rayDirections, gl.STATIC_DRAW);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, baseDepthBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, mesh.baseDepths, gl.STATIC_DRAW);
 
     gl.bindBuffer(gl.ARRAY_BUFFER, uvBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, mesh.uvs, gl.STATIC_DRAW);
@@ -104,10 +142,16 @@ export function createRenderer(canvas) {
     gl.bindVertexArray(null);
   }
 
-  function updatePositions(mesh) {
-    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
-    gl.bufferSubData(gl.ARRAY_BUFFER, 0, mesh.positions);
-    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+  function setDepthOptions(mesh, options = {}) {
+    depthTransform.minDepth = Math.max(mesh?.baseDepthMin ?? 0.15, 0.15);
+    depthTransform.farClip = Number.isFinite(options.farClip) ? options.farClip : 1000;
+    depthTransform.magnification = Number.isFinite(options.magnification) ? options.magnification : 1;
+    depthTransform.logPower = Number.isFinite(options.logPower) ? Math.max(options.logPower, 0.1) : 1;
+    depthTransform.useLog = options.mode === 'log' ? 1 : 0;
+  }
+
+  function updatePositions() {
+    // Depth shaping is now handled in the vertex shader via uniforms.
   }
 
   function setTexture(imageData) {
@@ -147,6 +191,11 @@ export function createRenderer(canvas) {
     gl.uniformMatrix4fv(uniforms.model, false, modelMatrix);
     gl.uniformMatrix4fv(uniforms.view, false, viewMatrix);
     gl.uniformMatrix4fv(uniforms.projection, false, projectionMatrix);
+    gl.uniform1f(uniforms.minDepth, depthTransform.minDepth);
+    gl.uniform1f(uniforms.farClip, depthTransform.farClip);
+    gl.uniform1f(uniforms.magnification, depthTransform.magnification);
+    gl.uniform1f(uniforms.logPower, depthTransform.logPower);
+    gl.uniform1f(uniforms.useLog, depthTransform.useLog);
 
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, texture);
@@ -162,6 +211,7 @@ export function createRenderer(canvas) {
     resize,
     updateGeometry,
     updatePositions,
+    setDepthOptions,
     setTexture,
     render,
   };
@@ -205,6 +255,13 @@ export const mat4 = {
       0, 0, 0, 1,
     ]);
   },
+  identityInto(out) {
+    out[0] = 1; out[1] = 0; out[2] = 0; out[3] = 0;
+    out[4] = 0; out[5] = 1; out[6] = 0; out[7] = 0;
+    out[8] = 0; out[9] = 0; out[10] = 1; out[11] = 0;
+    out[12] = 0; out[13] = 0; out[14] = 0; out[15] = 1;
+    return out;
+  },
   multiply(a, b) {
     const out = new Float32Array(16);
     for (let i = 0; i < 4; i++) {
@@ -235,6 +292,32 @@ export const mat4 = {
 
     out[8] = 0;
     out[9] = 0;
+    out[10] = (far + near) * nf;
+    out[11] = -1;
+
+    out[12] = 0;
+    out[13] = 0;
+    out[14] = (2 * far * near) * nf;
+    out[15] = 0;
+    return out;
+  },
+  frustum(left, right, bottom, top, near, far) {
+    const rl = 1 / (right - left);
+    const tb = 1 / (top - bottom);
+    const nf = 1 / (near - far);
+    const out = new Float32Array(16);
+    out[0] = (2 * near) * rl;
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = 0;
+
+    out[4] = 0;
+    out[5] = (2 * near) * tb;
+    out[6] = 0;
+    out[7] = 0;
+
+    out[8] = (right + left) * rl;
+    out[9] = (top + bottom) * tb;
     out[10] = (far + near) * nf;
     out[11] = -1;
 
@@ -409,5 +492,78 @@ export const mat4 = {
     out[10] *= factor;
     out[11] *= factor;
     return out;
+  },
+  translateInPlace(matrix, translation) {
+    const [x, y, z] = translation;
+    matrix[12] = matrix[0] * x + matrix[4] * y + matrix[8] * z + matrix[12];
+    matrix[13] = matrix[1] * x + matrix[5] * y + matrix[9] * z + matrix[13];
+    matrix[14] = matrix[2] * x + matrix[6] * y + matrix[10] * z + matrix[14];
+    matrix[15] = matrix[3] * x + matrix[7] * y + matrix[11] * z + matrix[15];
+    return matrix;
+  },
+  rotateXInPlace(matrix, angle) {
+    const c = Math.cos(angle);
+    const s = Math.sin(angle);
+    const m10 = matrix[4];
+    const m11 = matrix[5];
+    const m12 = matrix[6];
+    const m13 = matrix[7];
+    const m20 = matrix[8];
+    const m21 = matrix[9];
+    const m22 = matrix[10];
+    const m23 = matrix[11];
+    matrix[4] = m10 * c + m20 * s;
+    matrix[5] = m11 * c + m21 * s;
+    matrix[6] = m12 * c + m22 * s;
+    matrix[7] = m13 * c + m23 * s;
+    matrix[8] = m20 * c - m10 * s;
+    matrix[9] = m21 * c - m11 * s;
+    matrix[10] = m22 * c - m12 * s;
+    matrix[11] = m23 * c - m13 * s;
+    return matrix;
+  },
+  rotateYInPlace(matrix, angle) {
+    const c = Math.cos(angle);
+    const s = Math.sin(angle);
+    const m00 = matrix[0];
+    const m01 = matrix[1];
+    const m02 = matrix[2];
+    const m03 = matrix[3];
+    const m20 = matrix[8];
+    const m21 = matrix[9];
+    const m22 = matrix[10];
+    const m23 = matrix[11];
+    matrix[0] = m00 * c - m20 * s;
+    matrix[1] = m01 * c - m21 * s;
+    matrix[2] = m02 * c - m22 * s;
+    matrix[3] = m03 * c - m23 * s;
+    matrix[8] = m00 * s + m20 * c;
+    matrix[9] = m01 * s + m21 * c;
+    matrix[10] = m02 * s + m22 * c;
+    matrix[11] = m03 * s + m23 * c;
+    return matrix;
+  },
+  scaleInPlace(matrix, factor) {
+    matrix[0] *= factor;
+    matrix[1] *= factor;
+    matrix[2] *= factor;
+    matrix[3] *= factor;
+    matrix[4] *= factor;
+    matrix[5] *= factor;
+    matrix[6] *= factor;
+    matrix[7] *= factor;
+    matrix[8] *= factor;
+    matrix[9] *= factor;
+    matrix[10] *= factor;
+    matrix[11] *= factor;
+    return matrix;
+  },
+  transformPoint(matrix, point) {
+    const [x, y, z] = point;
+    return [
+      matrix[0] * x + matrix[4] * y + matrix[8] * z + matrix[12],
+      matrix[1] * x + matrix[5] * y + matrix[9] * z + matrix[13],
+      matrix[2] * x + matrix[6] * y + matrix[10] * z + matrix[14],
+    ];
   },
 };

@@ -1,4 +1,5 @@
+node_modules/
 .venv/
+checkpoints/
 __pycache__/
 *.pyc
-checkpoints/

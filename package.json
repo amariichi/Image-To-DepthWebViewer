@@ -1,0 +1,14 @@
+{
+  "name": "image-to-depth-web-viewer",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check:js": "node scripts/check-js.mjs",
+    "lint": "eslint webapp/src scripts/check-js.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.24.0",
+    "eslint": "^9.24.0",
+    "globals": "^16.0.0"
+  }
+}

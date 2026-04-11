@@ -75,8 +75,9 @@ export class WebXRManager {
   }
 
   async startSessionWithOptions(options = {}) {
-    if (!options.label && this.polyfillActive && this.nativeXR) {
-      this.restoreNativeXR();
+    if (!options.label && this.polyfillActive) {
+      this.onStatus('Reload the page before starting a standard VR session after Looking Glass.');
+      return false;
     }
     if (navigator.xr && this.xr !== navigator.xr) {
       this.xr = navigator.xr;
@@ -185,7 +186,6 @@ export class WebXRManager {
           }
           const merged = { ...(LookingGlassConfig || {}), ...config };
           // Instantiate polyfill once. Subsequent calls reuse existing session.
-          // eslint-disable-next-line no-new
           new LookingGlassWebXRPolyfill(merged);
           this.polyfillActive = true;
           this.xr = navigator.xr || this.xr;
@@ -222,12 +222,8 @@ export class WebXRManager {
       this.session = null;
       this.referenceSpace = null;
       this.prevXRTime = null;
-      const wasLookingGlass = this.isLookingGlass || this.lastSessionLabel === 'looking-glass';
       this.isLookingGlass = false;
       this.lastSessionLabel = null;
-      if (wasLookingGlass && this.nativeXR) {
-        this.restoreNativeXR();
-      }
       this.onStateChange({ active: false, mode: null });
       this.onStatus('XR session ended');
     });

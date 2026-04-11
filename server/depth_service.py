@@ -122,7 +122,7 @@ class DepthProService:
 
             output = Image.fromarray(combined, mode="RGBA")
             buffer = io.BytesIO()
-            output.save(buffer, format="PNG", compress_level=9)
+            output.save(buffer, format="PNG", compress_level=6)
             buffer.seek(0)
 
             output_name = f"{Path(original_name).stem}_RGBDE.png"

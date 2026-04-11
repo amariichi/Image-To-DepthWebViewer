@@ -39,6 +39,7 @@ This repository now ships a two-part toolchain: a WebGL viewer in `webapp/` and 
    python scripts/run_frontend.py
    ```
    Both approaches expose `http://localhost:5173` (configurable via `RGBDE_FRONTEND_PORT`).
+   For local performance spot checks, open `http://localhost:5173/perf-harness.html` after the frontend starts. The harness benchmarks the repository-local RGBDE fixtures and, when the backend is running, can also time one `/api/process` round trip.
 
 4. Open the viewer in Chrome/Edge/Safari:
    - Use **2D Image (JPEG or PNG) → Generate Depth** to run Depth Pro on a JPG/PNG; the backend never keeps files after responding.
@@ -60,6 +61,7 @@ This repository now ships a two-part toolchain: a WebGL viewer in `webapp/` and 
 
 ### Repository Layout
 - `webapp/index.html` – entry point and UI shell.
+- `webapp/perf-harness.html` – lightweight local benchmark page for RGBDE decode, preprocessing, mesh generation, and optional backend round-trip timing.
 - `webapp/src/geometry.js` – RGBDE decoding, depth preprocessing, mesh density selection, and pinhole projection.
 - `webapp/src/rendering.js` – WebGL2 renderer, shader setup, and camera math.
 - `webapp/src/app.js` – event wiring, UI bindings, and interaction logic.
@@ -106,6 +108,7 @@ This repository now ships a two-part toolchain: a WebGL viewer in `webapp/` and 
    python scripts/run_frontend.py
    ```
    どちらの場合も `RGBDE_FRONTEND_PORT` でフロントエンドのポートを変更できます。
+   ローカルで処理時間をざっと確認したい場合は、フロントエンド起動後に `http://localhost:5173/perf-harness.html` を開いてください。リポジトリ同梱の RGBDE fixture を使って、デコード・前処理・メッシュ生成を計測でき、バックエンド起動中なら `/api/process` の往復時間も確認できます。
    
 4. ブラウザ (Chrome / Edge / Safari) で `http://localhost:5173` を開き、以下を操作します。
    - **2D Image (JPEG or PNG) → Generate Depth**: JPG/PNG をアップロードすると Depth Pro が実行され、生成した RGBDE が即表示されます（サーバー側の一時ファイルはレスポンス後に削除）。
@@ -127,6 +130,7 @@ This repository now ships a two-part toolchain: a WebGL viewer in `webapp/` and 
 
 ### ディレクトリ構成
 - `webapp/index.html` – 画面レイアウトと UI。
+- `webapp/perf-harness.html` – RGBDE デコード、前処理、メッシュ生成、必要に応じてバックエンド往復時間を確認するための軽量なローカル計測ページ。
 - `webapp/src/geometry.js` – RGBDE の展開、デプス前処理、メッシュ分割と投影ロジック。
 - `webapp/src/rendering.js` – WebGL2 レンダラーとカメラ行列。
 - `webapp/src/app.js` – UI イベントとインタラクション制御。
