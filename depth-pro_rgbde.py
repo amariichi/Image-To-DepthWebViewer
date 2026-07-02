@@ -14,6 +14,12 @@ if SUBMODULE_PATH.exists():
 
 import depth_pro
 
+from rgbde_metadata import (
+    embed_depth_metadata_in_png,
+    make_depth_metadata,
+    tensor_to_float,
+)
+
 DEFAULT_FOLDER_PATH = './input'
 ALLOWED_EXTENSIONS = ('.jpg', '.jpeg', '.png')
 
@@ -21,16 +27,16 @@ def generate_depth_map(input_path, output_path, string):
     # Use GPU, if possible, GPUが利用可能な場合はGPUを使用
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-    
+
     # Load model and transform, モデルとトランスフォームの読み込み
     model, transform = depth_pro.create_model_and_transforms()
     model = model.to(device)
     model.eval()
 
     # Get file list of specified input folder, 指定した入力フォルダのファイルリストを取得
-    files = [f for f in os.listdir(input_path) if os.path.isfile(os.path.join(input_path, f)) 
+    files = [f for f in os.listdir(input_path) if os.path.isfile(os.path.join(input_path, f))
              and f.lower().endswith(ALLOWED_EXTENSIONS)]
-    
+
     os.makedirs(output_path, exist_ok=True)
 
     # Process files, ファイルを順番に処理
@@ -41,13 +47,14 @@ def generate_depth_map(input_path, output_path, string):
         # Image loading and preprocessing, 画像の読み込みと前処理
         image, _, f_px = depth_pro.load_rgb(file_path)
         image = transform(image).unsqueeze(0).to(device)
-    
+
         # Performing inference, 推論の実行
         with torch.no_grad():
             prediction = model.infer(image, f_px=f_px)
 
         # get depth map, デプスマップの取得
             depth = prediction["depth"].squeeze().cpu().numpy()
+            prediction_focal_length_px = tensor_to_float(prediction.get("focallength_px"))
             #color_depth = depth.astype(np.uint8)
 
         depth = np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
@@ -71,6 +78,14 @@ def generate_depth_map(input_path, output_path, string):
         out_image = Image.fromarray(combined, mode='RGBA')
         out_path = Path(output_path) / f"{Path(file).stem}_RGBDE{string}.png"
         out_image.save(out_path, format='PNG', compress_level=9)
+        metadata = make_depth_metadata(
+            file,
+            depth.shape[1],
+            depth.shape[0],
+            tensor_to_float(f_px),
+            prediction_focal_length_px,
+        )
+        embed_depth_metadata_in_png(out_path, metadata)
         print(f"Depth map of {file} is saved to {output_path}")
 
 if __name__ == "__main__":

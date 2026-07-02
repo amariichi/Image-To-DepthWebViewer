@@ -1,5 +1,7 @@
 node_modules/
 .venv/
 checkpoints/
+.agent/
+.playwright-cli/
 __pycache__/
 *.pyc

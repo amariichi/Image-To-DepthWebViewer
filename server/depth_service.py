@@ -13,6 +13,12 @@ from typing import Tuple
 import numpy as np
 from PIL import Image
 
+from rgbde_metadata import (
+    embed_depth_metadata_in_png_bytes,
+    make_depth_metadata,
+    tensor_to_float,
+)
+
 # Ensure the Depth Pro submodule is importable before pulling in torch/depth_pro.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SUBMODULE_PATH = PROJECT_ROOT / "third_party" / "ml-depth-pro"
@@ -108,6 +114,7 @@ class DepthProService:
                 prediction = self.model.infer(tensor, f_px=focal_px)
 
             depth = prediction["depth"].squeeze().cpu().numpy()
+            prediction_focal_length_px = tensor_to_float(prediction.get("focallength_px"))
             depth = np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
             depth = np.maximum(depth, 0.0)
 
@@ -123,10 +130,17 @@ class DepthProService:
             output = Image.fromarray(combined, mode="RGBA")
             buffer = io.BytesIO()
             output.save(buffer, format="PNG", compress_level=6)
-            buffer.seek(0)
+            metadata = make_depth_metadata(
+                original_name,
+                depth.shape[1],
+                depth.shape[0],
+                tensor_to_float(focal_px),
+                prediction_focal_length_px,
+            )
+            png_bytes = embed_depth_metadata_in_png_bytes(buffer.getvalue(), metadata)
 
             output_name = f"{Path(original_name).stem}_RGBDE.png"
-            return DepthResult(png_bytes=buffer.read(), filename=output_name)
+            return DepthResult(png_bytes=png_bytes, filename=output_name)
 
     @staticmethod
     def _encode_depth(depth: np.ndarray) -> np.ndarray:

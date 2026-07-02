@@ -21,6 +21,7 @@ const panel = document.getElementById('control-panel');
 const fileInput = document.getElementById('file-input');
 const openDialogButton = document.getElementById('open-dialog');
 const geomFovInput = document.getElementById('geom-fov');
+const meshQualityInput = document.getElementById('mesh-quality');
 const displayModeInput = document.getElementById('display-mode');
 const enterVrButton = document.getElementById('enter-vr');
 const enterLookingGlassButton = document.getElementById('enter-looking-glass');
@@ -70,6 +71,9 @@ const FAR_AUTO_EXPANSION = 10;
 const GEOM_FOV_MIN = 15;
 const GEOM_FOV_MAX = 120;
 const GEOM_FOV_DEFAULT = 32;
+const MESH_TARGET_BASE = 250000;
+const MESH_QUALITY_DEFAULT = 1;
+const MESH_QUALITY_OPTIONS = new Set([1, 2, 4]);
 const FOV_MIN = 15;
 const FOV_MAX = 120;
 const FOV_DEFAULT = 60;
@@ -200,6 +204,8 @@ const state = {
     meshX: 0,
     meshY: 0,
     geomFov: GEOM_FOV_DEFAULT,
+    defaultGeomFov: GEOM_FOV_DEFAULT,
+    qualityMultiplier: MESH_QUALITY_DEFAULT,
   },
   camera: {
     fov: FOV_DEFAULT,
@@ -278,6 +284,9 @@ function init() {
   stereoSeparationInput.value = state.stereo.separation.toFixed(3);
   swapEyesInput.checked = state.stereo.swapEyes;
   setSourceLabel(state.sourceLabel);
+  if (meshQualityInput) {
+    meshQualityInput.value = String(state.meshConfig.qualityMultiplier);
+  }
   updateBinding('stereoValue', state.stereo.separation.toFixed(3));
   updateBinding('xrStatus', state.xr.status);
   checkBackend();
@@ -329,7 +338,7 @@ async function handleFiles(input, meta = {}) {
     state.rgbde = data;
     state.is360 = /\.360\./i.test(file.name);
     const { width, height } = data;
-    const meshSize = findBestMeshSize(width, height);
+    const meshSize = findBestMeshSize(width, height, getMeshTarget());
     if (!meshSize.meshX || !meshSize.meshY) {
       throw new Error('Unable to determine mesh density for this image.');
     }
@@ -338,7 +347,13 @@ async function handleFiles(input, meta = {}) {
     }
     state.meshConfig.meshX = meshSize.meshX;
     state.meshConfig.meshY = meshSize.meshY;
-    const currentGeomFov = clamp(state.meshConfig.geomFov, GEOM_FOV_MIN, GEOM_FOV_MAX);
+    const metadataGeomFov = getMetadataVerticalFov(data.metadata);
+    const currentGeomFov = clamp(
+      metadataGeomFov ?? state.meshConfig.geomFov,
+      GEOM_FOV_MIN,
+      GEOM_FOV_MAX,
+    );
+    state.meshConfig.defaultGeomFov = currentGeomFov;
     setReconstructionFov(currentGeomFov, { rebuild: false });
     const mesh = generatePerspectiveMesh({
       depth: data.depth,
@@ -378,7 +393,10 @@ async function handleFiles(input, meta = {}) {
     applyInitialView();
     resetView();
     setCurrentAsset(file, meta.sourceType || 'rgbde');
-    showStatus(`Loaded ${file.name} (${width}×${height})`);
+    const metadataNote = metadataGeomFov !== null
+      ? `; Geometry FOV ${Math.round(currentGeomFov)}° from metadata`
+      : '';
+    showStatus(`Loaded ${file.name} (${width}×${height})${metadataNote}`);
     return true;
   } catch (error) {
     if (requestId !== state.loadRequestId) {
@@ -761,6 +779,13 @@ function attachUIListeners() {
     syncMirrorControls();
   });
 
+  if (meshQualityInput) {
+    meshQualityInput.addEventListener('change', (event) => {
+      setMeshQuality(event.target.value, { rebuild: true });
+      syncMirrorControls();
+    });
+  }
+
   fovInput.addEventListener('input', (event) => {
     const value = Number(event.target.value);
     const clamped = clamp(value, FOV_MIN, FOV_MAX);
@@ -1036,7 +1061,10 @@ function attachPointerListeners() {
   });
 
   canvas.addEventListener('dblclick', () => {
-    setReconstructionFov(GEOM_FOV_DEFAULT, { rebuild: true, preserveView: false });
+    setReconstructionFov(state.meshConfig.defaultGeomFov ?? GEOM_FOV_DEFAULT, {
+      rebuild: true,
+      preserveView: false,
+    });
     resetView();
     state.controls.scale = state.initialScale;
     state.controls.translationZ = 0;
@@ -1809,6 +1837,59 @@ function showStatus(message, timeout = 2000) {
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
+}
+
+function getMetadataVerticalFov(metadata) {
+  const value = metadata?.verticalFovDeg;
+  return Number.isFinite(value) ? value : null;
+}
+
+function normalizeMeshQuality(value) {
+  const number = Number(value);
+  return MESH_QUALITY_OPTIONS.has(number) ? number : MESH_QUALITY_DEFAULT;
+}
+
+function getMeshTarget() {
+  return MESH_TARGET_BASE * state.meshConfig.qualityMultiplier;
+}
+
+function setMeshQuality(value, { rebuild = false } = {}) {
+  const multiplier = normalizeMeshQuality(value);
+  if (state.meshConfig.qualityMultiplier === multiplier && !rebuild) {
+    return;
+  }
+  state.meshConfig.qualityMultiplier = multiplier;
+  if (meshQualityInput && meshQualityInput.value !== String(multiplier)) {
+    meshQualityInput.value = String(multiplier);
+  }
+  if (rebuild) {
+    rebuildMeshDensity();
+  }
+}
+
+function rebuildMeshDensity() {
+  if (!state.rgbde) {
+    showStatus(`Mesh quality ${state.meshConfig.qualityMultiplier}x will apply to the next RGBDE file.`, 2500);
+    return;
+  }
+  const { width, height } = state.rgbde;
+  const meshSize = findBestMeshSize(width, height, getMeshTarget());
+  if (!meshSize.meshX || !meshSize.meshY) {
+    showStatus('Unable to determine mesh density for this image.', 4000);
+    return;
+  }
+  state.meshConfig.meshX = meshSize.meshX;
+  state.meshConfig.meshY = meshSize.meshY;
+  rebuildMesh({ preserveView: true });
+  const cells = meshSize.meshX * meshSize.meshY;
+  showStatus(`Mesh quality ${state.meshConfig.qualityMultiplier}x (${formatMeshCount(cells)} cells)`, 2500);
+}
+
+function formatMeshCount(value) {
+  if (!Number.isFinite(value)) return '0';
+  if (value >= 1000000) return `${(value / 1000000).toFixed(1)}M`;
+  if (value >= 1000) return `${Math.round(value / 1000)}k`;
+  return String(Math.round(value));
 }
 
 function formatFarClip(value) {

@@ -56,7 +56,17 @@
           <p class="hint" data-bind="xrStatus">WebXR: checking…</p>
         </div>
         <div class="control">
-          <label for="geom-fov">Geometry FOV <span data-bind="geomFovValue">32</span>°</label>
+          <div class="control-header">
+            <label for="geom-fov">Geom FOV <span data-bind="geomFovValue">32</span>°</label>
+            <label class="inline-select" for="mesh-quality">
+              <span>Mesh</span>
+              <select id="mesh-quality" data-sync="meshQuality" title="Mesh quality">
+                <option value="1">1x</option>
+                <option value="2">2x</option>
+                <option value="4">4x</option>
+              </select>
+            </label>
+          </div>
           <input id="geom-fov" data-sync="geomFov" type="range" min="15" max="120" step="1" value="32" />
         </div>
         <div class="control">
