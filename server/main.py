@@ -16,7 +16,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-
 def read_app_version() -> str:
     version_path = Path(__file__).resolve().parents[1] / "VERSION"
     try:

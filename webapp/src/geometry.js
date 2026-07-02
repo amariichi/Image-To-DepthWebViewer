@@ -76,7 +76,7 @@ function getDecodeWorkerState() {
   const worker = new Worker(new URL('./rgbde-worker.js', import.meta.url), { type: 'module' });
   const pending = new Map();
   worker.addEventListener('message', (event) => {
-    const { id, ok, error, width, height, leftPixelsBuffer, depthBuffer, depthStats, metrics } = event.data || {};
+    const { id, ok, error, width, height, leftPixelsBuffer, depthBuffer, depthStats, metadata, metrics } = event.data || {};
     const entry = pending.get(id);
     if (!entry) {
       return;
@@ -96,6 +96,7 @@ function getDecodeWorkerState() {
       leftPixels,
       depth,
       depthStats,
+      metadata,
       textureImage: new ImageData(leftPixels, width, height),
       metrics,
     });

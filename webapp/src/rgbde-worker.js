@@ -26,6 +26,7 @@ self.addEventListener('message', async (event) => {
         leftPixelsBuffer: decoded.leftPixels.buffer,
         depthBuffer: preprocessedDepth.buffer,
         depthStats,
+        metadata: decoded.metadata,
         metrics: {
           decodeMs,
           preprocessMs,

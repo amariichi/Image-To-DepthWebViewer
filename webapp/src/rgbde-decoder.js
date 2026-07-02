@@ -1,7 +1,8 @@
 const MIN_DEPTH_CLAMP = 0.15;
+export const DEPTH_METADATA_KEYWORD = 'LookingGlassGoDepthMetadata';
 
 export async function decodeRgbdeComponentsFromBlob(blob) {
-  const { width: fullWidth, height, data } = await parsePng(blob);
+  const { width: fullWidth, height, data, metadata: rawMetadata } = await parsePng(blob);
   if (fullWidth % 2 !== 0) {
     throw new Error('RGBDE PNG must have even width (RGB + depth halves).');
   }
@@ -50,6 +51,7 @@ export async function decodeRgbdeComponentsFromBlob(blob) {
     height,
     leftPixels,
     depth: depthValues,
+    metadata: normalizeDepthMetadata(rawMetadata, width, height),
     depthStats: {
       min: depthMin,
       max: depthMax > 0 ? depthMax : depthMin + 1,
@@ -72,6 +74,53 @@ export function computeDepthStats(depth) {
   return { min, max };
 }
 
+export function normalizeDepthMetadata(rawMetadata, width, height) {
+  if (!rawMetadata || typeof rawMetadata !== 'object') {
+    return null;
+  }
+
+  const focalLengthPx = positiveNumber(
+    rawMetadata.focallength_px
+      ?? rawMetadata.focal_length_px
+      ?? rawMetadata.prediction_focal_length_px
+  );
+  const inputFocalLengthPx = positiveNumber(rawMetadata.input_focal_length_px);
+  const metadataWidth = positiveNumber(rawMetadata.width) ?? width;
+  const metadataHeight = positiveNumber(rawMetadata.height) ?? height;
+  const horizontalFovDeg = validFovDegrees(rawMetadata.horizontal_fov_deg)
+    ?? focalLengthToFovDeg(metadataWidth, focalLengthPx);
+  const verticalFovDeg = validFovDegrees(rawMetadata.vertical_fov_deg)
+    ?? focalLengthToFovDeg(metadataHeight, focalLengthPx);
+
+  return {
+    raw: rawMetadata,
+    sourceFile: typeof rawMetadata.source_file === 'string' ? rawMetadata.source_file : null,
+    width: metadataWidth,
+    height: metadataHeight,
+    inputFocalLengthPx,
+    focalLengthPx,
+    horizontalFovDeg,
+    verticalFovDeg,
+  };
+}
+
+export function focalLengthToFovDeg(sizePx, focalLengthPx) {
+  if (!Number.isFinite(sizePx) || sizePx <= 0 || !Number.isFinite(focalLengthPx) || focalLengthPx <= 0) {
+    return null;
+  }
+  return (2 * Math.atan(sizePx / (2 * focalLengthPx)) * 180) / Math.PI;
+}
+
+function positiveNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function validFovDegrees(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 && number < 180 ? number : null;
+}
+
 async function parsePng(blob) {
   const buffer = await blob.arrayBuffer();
   const bytes = new Uint8Array(buffer);
@@ -91,6 +140,7 @@ async function parsePng(blob) {
   let height = 0;
   let bitDepth = 0;
   let colorType = 0;
+  let metadata = null;
   const idatChunks = [];
 
   while (offset < bytes.length) {
@@ -114,6 +164,11 @@ async function parsePng(blob) {
       }
     } else if (type === 'IDAT') {
       idatChunks.push({ offset, length });
+    } else if (type === 'iTXt') {
+      const entry = parseITxtChunk(bytes.subarray(offset, offset + length));
+      if (entry && entry.keyword === DEPTH_METADATA_KEYWORD) {
+        metadata = parseMetadataJson(entry.text);
+      }
     } else if (type === 'IEND') {
       break;
     }
@@ -171,7 +226,47 @@ async function parsePng(blob) {
     dst += stride;
   }
 
-  return { width, height, data: raw };
+  return { width, height, data: raw, metadata };
+}
+
+function parseITxtChunk(data) {
+  const keywordEnd = findNullByte(data, 0);
+  if (keywordEnd <= 0 || keywordEnd + 5 > data.length) {
+    return null;
+  }
+  const keyword = new TextDecoder('latin1').decode(data.subarray(0, keywordEnd));
+  const compressionFlag = data[keywordEnd + 1];
+  const compressionMethod = data[keywordEnd + 2];
+  if (compressionFlag !== 0 || compressionMethod !== 0) {
+    return null;
+  }
+
+  let cursor = keywordEnd + 3;
+  const languageEnd = findNullByte(data, cursor);
+  if (languageEnd < 0) return null;
+  cursor = languageEnd + 1;
+  const translatedEnd = findNullByte(data, cursor);
+  if (translatedEnd < 0) return null;
+  cursor = translatedEnd + 1;
+
+  const text = new TextDecoder('utf-8').decode(data.subarray(cursor));
+  return { keyword, text };
+}
+
+function parseMetadataJson(text) {
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function findNullByte(data, start) {
+  for (let i = start; i < data.length; i++) {
+    if (data[i] === 0) return i;
+  }
+  return -1;
 }
 
 function concatenateRanges(bytes, ranges) {
