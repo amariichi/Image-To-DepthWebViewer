@@ -58,6 +58,7 @@ The desktop editor can publish its current baked scene to a separate, touch-frie
 2. On the phone or tablet, open the same frontend host with `/viewer.html` appended—for example, `https://your-frontend-address/viewer.html`. Camera access requires a secure context. `http://localhost` is allowed on the same device, but an ordinary `http://` LAN address generally is not; use an HTTPS reverse proxy or your existing trusted HTTPS mapping to port 5173.
 3. Press **Start 3D**, hold the device steady while the centered pose calibrates, then move your head to look around the baked scene. **Recenter** repeats the short calibration without reloading the model. Landscape is recommended for the widest tracked-window effect. Current iPhone testing found that Safari and iOS Chrome need the same horizontal correction, so both now start in that direction. If a device still runs backwards, press **Flip L/R**; that choice is saved in the browser.
 4. One-finger drag rotates within ±30°. A two-finger pinch scales the miniature uniformly, including its depth, until the relief would be thicker than a quarter of your measured viewing distance; beyond that the image keeps growing but depth stops, which is what prevents the crescent-shaped foreground distortion that unbounded depth growth produces. Moving two fingers together pans. Touch remains available when camera permission is denied or tracking is stopped.
+5. Zooming in re-targets the depth budget at whatever you are looking at. Whatever is on screen is pulled forward onto the glass, and once the gesture settles the relief is rebuilt over just the visible depth range. This is what makes distant detail inspectable: in a room with a person at 1 m and balloons on a wall at 4 m, the balloons hold under one percent of the scene's depth budget and stay flat however far you zoom, but rebuilt over their own range they receive nearly half of it. Zooming back out restores the whole scene.
 
 Front-camera frames and face landmarks are processed locally in the mobile browser and are never published to the PC relay. The viewer does not request gyroscope, DeviceOrientation, or DeviceMotion access. It downloads the pinned MediaPipe Tasks Vision runtime/model on first use, but does not upload camera data to that provider. Add `?debug=1` to the viewer URL to show the local camera preview, eye pose, render/inference cadence, camera resolution, first-pose latency, the resolved physical screen size and viewing geometry, and sliders for viewing distance, relief depth, and disparity blend.
 
@@ -105,6 +106,7 @@ The port-5173 relay keeps only the latest published scene in memory. Restarting 
 - `webapp/src/mobile-relief.js` – screen-fitted, behind-glass relief generation for published scenes.
 - `webapp/src/mobile-publish-mesh.js` – mobile-only grid and texture budgets used during publish, including the reduced fallback profile.
 - `webapp/src/device-metrics.js` – physical screen size per device and the viewing geometry derived from it.
+- `webapp/src/webxr.js` – WebXR and Looking Glass session lifecycle, including the module preload that keeps the entry click's user activation intact.
 - `webapp/src/webxr.js` – WebXR session orchestration for VR and Looking Glass.
 
 ### Third-Party Resources
@@ -167,6 +169,7 @@ PC エディタで調整したシーンを、iPhone / iPad 向けのタッチ対
 2. スマホ／タブレットでは、同じフロントエンドホストの末尾に `/viewer.html` を付けて開きます（例: `https://your-frontend-address/viewer.html`）。カメラにはセキュアコンテキストが必要です。同じ端末上の `http://localhost` は例外ですが、通常の LAN 内 `http://` アドレスでは許可されないため、ポート 5173 に向けた HTTPS リバースプロキシまたは既存の信頼済み HTTPS マッピングを使用してください。
 3. **Start 3D** を押し、正面姿勢の短いキャリブレーション中は端末を安定させます。その後、頭を動かすと焼き込み済みシーンの視点が変化します。**Recenter** はモデルを再読込せずにキャリブレーションだけをやり直します。今回の iPhone 実機確認では Safari と iOS Chrome に同じ左右補正が必要だったため、両方を同じ初期方向にしました。端末によってまだ逆なら **Flip L/R** を押してください。この選択はブラウザ内に保存されます。Tracked Window の効果を広く感じるには横画面がおすすめです。
 4. 1本指ドラッグは ±30° 以内の回転です。2本指ピンチはミニチュア全体を奥行きも含めて等方拡大します。ただし relief の厚みが実測視距離の1/4を超える手前で奥行きの成長は止まり、以降は画像だけが拡大します。奥行きが視距離に対して無制限に増えることが、報告された手前側の三日月状の破綻の原因でした。2本指を一緒に動かす操作は平行移動です。カメラを拒否／停止してもタッチ操作は使えます。
+5. ズームすると深度バジェットが「今見ているもの」に振り直されます。画面内の最近点がガラス面へ引き寄せられ、操作が落ち着いた時点で可視範囲の深度だけで relief を組み直します。奥のものを立体的に見るにはこれが必須です。手前に人物（1m）、奥の壁に風船（4m）という室内なら、風船自身の奥行きはシーン全体の深度バジェットの1%未満しかないため、いくらズームしても平らなままでした。可視範囲で組み直すと風船がバジェットのほぼ半分を受け取ります。ズームを戻せば全景に復帰します。
 
 前面カメラ映像と顔ランドマークはモバイルブラウザ内だけで処理され、PC のシーン relay には送信されません。ジャイロ、DeviceOrientation、DeviceMotion の許可も要求しません。初回は固定バージョンの MediaPipe Tasks Vision とモデルをダウンロードしますが、カメラデータをその提供元へアップロードする処理はありません。URL に `?debug=1` を付けると、端末内カメラプレビュー、eye pose、描画／推論 cadence、実カメラ解像度、最初の pose までの時間に加えて、判定された画面実寸と視距離ジオメトリ、そして視距離・relief 厚・disparity blend の調整スライダが表示されます。
 

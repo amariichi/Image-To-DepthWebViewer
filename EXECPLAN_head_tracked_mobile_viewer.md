@@ -50,6 +50,9 @@ The feature is successful when a user loads or generates an RGBDE scene at `http
 - [x] (2026-08-19) Ran 77 JavaScript tests, 17 Python tests, syntax checks over 22 JavaScript files, ESLint, and `git diff --check`; all passed.
 - [x] (2026-08-19) Corrected a mistaken account of why the mobile path differs from the desktop and Looking Glass paths. A perspective projection already compresses distance by `1 / d` on its own, so uniform scaling with no depth remapping is a legitimate presentation and is what those paths use. The real defect in the earlier build was remapping depth *linearly* into a very small span, which destroyed the compression the projection would have performed. Recorded the numerical comparison in `Surprises & Discoveries`.
 - [x] (2026-08-19) Raised the relief span ceiling from `1.8` to `8` in the manifest, the relay, and the debug slider, pushed the near plane out in proportion so depth precision survives a deep relief, and added `estimateUniformScaleDepthSpan()` plus a debug readout showing how deep the same scene would be with no remapping at all.
+- [x] (2026-08-19) Made zooming useful for inspecting something distant. Each image cell now records its nearest relief point and the source depth range it covers, whatever is on screen is pulled forward onto the glass, and the relief is rebuilt over just the visible depth range once a gesture settles. Both behaviours have `?debug=1` toggles.
+- [x] (2026-08-19) Fixed the Looking Glass first-entry failure. Awaiting the CDN module fetch inside the click handler was spending the user activation the polyfill needs to open its display window, which is why the second attempt always worked. The module is now fetched on pointer enter or pointer down, leaving the click's activation intact, and a single automatic retry remains as a safety net.
+- [x] (2026-08-19) Entering Looking Glass mode now places the model's nearest surface on its focal plane instead of two units in front of a monitor camera, so it no longer has to be dragged forward with the Z slider every session. The slider still applies on top, and exiting restores the monitor placement exactly.
 - [ ] Settle the three remaining perceptual variables on the user's real iPhone 17 and iPad mini using the `?debug=1` sliders, then fold the chosen values into the defaults. Verify the fourth-pass behavior: iPhone Chrome direction is natural, Safari motion is approximately half the original amplitude, the newly republished optimized scene loads in iPad Chrome, pinch magnifies without producing crescent-shaped foreground distortion, and a near subject in a deep outdoor scene now has visible relief.
 
 ## Surprises & Discoveries
@@ -128,6 +131,18 @@ The feature is successful when a user loads or generates an RGBDE scene at `http
 
 - Observation: A uniformly scaled miniature and a relief that sits just behind the glass are incompatible for a scene with a large depth ratio.
   Evidence: Scaling the same coastal portrait uniformly to fit the screen puts the horizon roughly 7,900 world units behind the glass, against a virtual screen two units tall. Bounding the relief to a miniature therefore requires non-uniform depth compression by definition, and the choice of compression curve is exactly what the disparity blend controls.
+
+- Observation: Pulling the nearest visible sample onto the glass is not enough on its own when the viewer zooms into something distant, because the zoomed region also holds almost none of the depth budget.
+  Evidence: In a room with a person at 1 m and balloons on a wall at 4 m, the balloons' own 10 cm of depth is 0.85 percent of the scene's budget under disparity mapping. At an eye distance of 4.6 units their differential parallax is 0.126 percent; anchoring alone raises it to 0.185 percent, a factor of 1.5. Rebuilding the relief over just the visible depth range raises it to 17.9 percent, a factor of 142. A browser check on a synthetic version of that scene measured the visible range narrowing from 1.04–4.15 to 3.90–4.12, the balloons' share rising from 0.89 to 47.2 percent, and their differential parallax rising from 0.169 to 8.26 percent.
+
+- Observation: Motion parallax shared by everything on screen carries no shape information, and a deep relief makes it dominate.
+  Evidence: A region 3.7 to 4.0 units behind the glass viewed from 4.6 units slides by 44.6 percent of the head movement while differing internally by 1.9 percent. Moving it onto the glass removes the shared part entirely and raises the difference to 6.1 percent, because the parallax curve `D / (E + D)` is steepest at the glass.
+
+- Observation: The Looking Glass first-entry failure was a user-activation race, not a vendor quirk.
+  Evidence: `ensureLookingGlassPolyfill` awaited a dynamic import of the Looking Glass bundle from a CDN inside the click handler. That await spends the transient user activation the polyfill needs in order to open its display window, so the first attempt was blocked; the second attempt succeeded because the module was already cached and the await resolved in a microtask. The existing `SecurityError` branch in `startSessionWithOptions`, which tells the user to click again, is a symptom of the same cause. A browser check confirmed that importing the module leaves `navigator.xr` native and `polyfillActive` false, so warming it early does not disturb the plain VR path.
+
+- Observation: The Looking Glass placement problem is that the monitor and hologram coordinate conventions differ by exactly the monitor's near-placement constant.
+  Evidence: `refreshAutoFit` places the model's nearest surface at `DESIRED_NEAR`, which is `-2.0`, because the monitor camera sits at the origin looking down `-z`. A Looking Glass hologram volume is centred on the reference-space origin instead, so the same placement leaves the model behind the display. A browser check measured the model translation moving from `-1.092` to `0.908`, exactly two units forward, on entering Looking Glass mode, and returning to `-1.092` on exit.
 
 ## Decision Log
 
@@ -218,6 +233,18 @@ The feature is successful when a user loads or generates an RGBDE scene at `http
 - Decision: Raise the relief span ceiling far above the miniature default and report the uniform-scale equivalent, rather than assuming the bounded presentation is correct.
   Rationale: Uniform scaling is a legitimate presentation that the desktop and Looking Glass paths already use successfully, and a monocular display can carry much more depth than a stereo one. Which of the two the viewer should prefer is a perceptual question that only a real device can answer, so both ends of the range must be reachable and the difference must be visible in the debug readout.
   Date/Author: 2026-08-19 / Claude, prompted by the user's Looking Glass Go comparison
+
+- Decision: Rebuild the relief over the visible depth range after a gesture settles, rather than during it or not at all.
+  Rationale: Spending the whole budget on what the viewer has zoomed into is the only thing that makes distant detail readable, but it rewrites every vertex and re-uploads the buffers, so it cannot run per frame. Running it once the gesture stops is invisible in use. Refits are clamped to the outlier-trimmed range so they cannot quietly undo the near and far quantiles, and zooming back out restores the full scene.
+  Date/Author: 2026-08-19 / Claude, prompted by the user's example of zooming into balloons on a far wall
+
+- Decision: Query the visible region with the calibrated eye, never the live one.
+  Rationale: Both the anchor and the depth refit depend on what is on screen. Driving them from the tracked eye would make the model swim about as the viewer moved their head, which is the opposite of the stationary window the projection is built to provide.
+  Date/Author: 2026-08-19 / Claude
+
+- Decision: Fix the Looking Glass first-entry failure at its cause by separating the module fetch from the polyfill installation, and keep a single retry as a safety net.
+  Rationale: Automatically toggling the mode off and on would hide a race rather than remove it. Fetching the bundle on pointer enter or pointer down keeps the click's user activation intact, and because merely importing the module leaves `navigator.xr` native, warming it early cannot affect the plain VR path.
+  Date/Author: 2026-08-19 / Claude, prompted by the user's report that the first entry always fails
 
 - Decision: Continue without DeviceOrientation fusion or a full per-eye renderer in this milestone and document the cyclopean limitation.
   Rationale: Motion sensors add permission, calibration, and browser-coordinate complexity, while a normal panel cannot emit separate views to both eyes. Strong Z damping is a safe comfort correction now; richer 6-DoF/device-pose fusion belongs in a separately tested milestone.

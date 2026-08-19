@@ -38,6 +38,7 @@ export class WebXRManager {
     this.referenceSpace = null;
     this.isLookingGlass = false;
     this.lookPromise = null;
+    this.lookModulePromise = null;
     this.xrSupported = false;
     this.nativeXR = navigator.xr || null;
     this.xr = this.nativeXR;
@@ -155,6 +156,29 @@ export class WebXRManager {
     this.polyfillActive = false;
   }
 
+  // Fetches the Looking Glass bundle without installing it.
+  //
+  // This is the whole reason the first attempt used to fail. The module is
+  // loaded from a CDN, and awaiting that fetch inside the click handler spends
+  // the transient user activation that the polyfill needs in order to open its
+  // display window. The second attempt then succeeded only because the module
+  // was already cached. Warming the cache ahead of time keeps the click's
+  // activation intact.
+  //
+  // Loading the module has no global effect; only constructing the polyfill
+  // replaces `navigator.xr`, which would take the plain VR path with it.
+  preloadLookingGlassModule() {
+    if (!this.lookModulePromise) {
+      this.lookModulePromise = import(/* webpackIgnore: true */ LOOKING_GLASS_MODULE)
+        .catch((error) => {
+          console.error('Looking Glass module load failed', error);
+          this.lookModulePromise = null;
+          throw error;
+        });
+    }
+    return this.lookModulePromise;
+  }
+
   async enterLookingGlass(config = {}) {
     this.isLookingGlass = true;
     try {
@@ -167,18 +191,27 @@ export class WebXRManager {
       return false;
     }
     this.onStateChange({ lookingGlassReady: true, lookingGlassError: null });
-    return this.enterVR({
+    const sessionOptions = {
       sessionInit: {
         requiredFeatures: ['local-floor'],
         optionalFeatures: ['bounded-floor'],
       },
       label: 'looking-glass',
-    });
+    };
+    if (await this.enterVR(sessionOptions)) return true;
+    // The polyfill is installed by now even if it was not on the first pass, so
+    // one more attempt costs nothing and covers whatever else the vendor flow
+    // needs on a cold start.
+    this.onStatus('Looking Glass did not start; retrying once…');
+    this.isLookingGlass = true;
+    return this.enterVR(sessionOptions);
   }
 
   async ensureLookingGlassPolyfill(config) {
     if (!this.lookPromise) {
-      this.lookPromise = import(/* webpackIgnore: true */ LOOKING_GLASS_MODULE)
+      // Resolving the module first keeps the instantiation below synchronous,
+      // so the caller's user activation survives into requestSession.
+      this.lookPromise = this.preloadLookingGlassModule()
         .then((module) => {
           const { LookingGlassWebXRPolyfill, LookingGlassConfig } = module;
           if (!LookingGlassWebXRPolyfill) {
@@ -192,7 +225,7 @@ export class WebXRManager {
           return true;
         })
         .catch((error) => {
-          console.error('Looking Glass module load failed', error);
+          this.lookPromise = null;
           throw error;
         });
     }

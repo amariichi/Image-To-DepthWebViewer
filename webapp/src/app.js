@@ -77,6 +77,13 @@ const MAX_Z_OFFSET = 5;
 const MIN_SCALE = 0.05;
 const MAX_SCALE = 25;
 const DESIRED_NEAR = -2.0;
+// The monitor path puts the model two units in front of a camera at the origin.
+// A Looking Glass hologram volume is centred on the reference-space origin
+// instead, so the same placement leaves the model sitting behind the display and
+// has to be dragged forward by hand every session. Entering Looking Glass mode
+// therefore lands the nearest surface on the focal plane; the Z offset slider
+// still works on top of that.
+const LOOKING_GLASS_FOCAL_Z = 0;
 const MAG_MIN = 0.1;
 const MAG_MAX = 100;
 const MAG_DEFAULT = 0.5;
@@ -1643,6 +1650,10 @@ function setupXR() {
       const prevActive = state.xr.active;
       const prevMode = state.xr.mode;
       state.xr = { ...state.xr, ...updates };
+      if (state.xr.mode !== prevMode) {
+        // Looking Glass places the model relative to its own focal plane.
+        invalidateModelMatrix();
+      }
       if (!state.xr.supported && !state.xr.active) {
         state.xr.status = 'WebXR unavailable';
         updateBinding('xrStatus', state.xr.status);
@@ -1691,6 +1702,14 @@ function setupXR() {
       handleEnterVr();
     }
   });
+
+  // Fetching the Looking Glass bundle inside the click handler spends the user
+  // activation its display window needs, which is why the first attempt always
+  // failed and the second always worked. Warming it beforehand costs nothing and
+  // has no global effect until the polyfill is actually constructed.
+  const warmLookingGlass = () => { void xrManager.preloadLookingGlassModule(); };
+  enterLookingGlassButton.addEventListener('pointerenter', warmLookingGlass, { once: true });
+  enterLookingGlassButton.addEventListener('pointerdown', warmLookingGlass, { once: true });
 
   enterLookingGlassButton.addEventListener('click', () => {
     if (state.xr.active && state.xr.mode === 'looking-glass') {
@@ -1826,13 +1845,22 @@ function updateMirrorVisibility() {
   }
 }
 
+function lookingGlassAutoTranslationZ() {
+  const info = state.displayBounds;
+  if (!info) return state.autoTranslationZ;
+  return clamp(LOOKING_GLASS_FOCAL_Z - info.maxZ, -20, 20);
+}
+
 function computeModelMatrix() {
   if (!state.render.modelMatrixDirty) {
     return state.render.modelMatrix;
   }
 
+  const autoZ = state.xr.mode === 'looking-glass'
+    ? lookingGlassAutoTranslationZ()
+    : state.autoTranslationZ;
   const model = state.render.modelMatrix;
-  const translateZ = state.controls.translationZ + state.autoTranslationZ;
+  const translateZ = state.controls.translationZ + autoZ;
   mat4.identityInto(model);
   mat4.translateInPlace(model, [state.controls.translationX, state.controls.translationY, translateZ]);
   mat4.translateInPlace(model, [0, 0, state.pivotZ]);
