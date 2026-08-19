@@ -148,6 +148,24 @@ class ViewerHostApiTest(unittest.TestCase):
         rejected = self.client.get("/viewer-api/scene/model", params={"variant": "tiny"})
         self.assertEqual(rejected.status_code, 400)
 
+    def test_frontend_modules_must_be_revalidated_but_scene_headers_are_kept(self) -> None:
+        # The frontend is a set of native ES modules that import each other by
+        # name. A browser holding a stale copy of one while fetching another
+        # links them together and fails, leaving the page with no event
+        # listeners and no visible error.
+        page = self.client.get("/")
+        self.assertEqual(page.headers["cache-control"], "no-cache")
+
+        self.client.post(
+            "/viewer-api/scene",
+            files={"model": ("scene.glb", b"model", "model/gltf-binary")},
+            data={"manifest": manifest()},
+        )
+        model = self.client.get("/viewer-api/scene/model")
+        # The scene endpoints set their own headers and must keep them.
+        self.assertEqual(model.headers["cache-control"], "no-cache")
+        self.assertEqual(model.headers["etag"], '"scene-1-full"')
+
     def test_upload_limit_and_empty_model_are_rejected(self) -> None:
         with TestClient(create_app(WEBAPP_DIR, max_upload_bytes=4)) as limited_client:
             oversized = limited_client.post(

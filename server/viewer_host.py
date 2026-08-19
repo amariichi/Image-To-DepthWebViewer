@@ -258,6 +258,25 @@ def create_app(
         store.clear()
         return {"cleared": True}
 
+    @app.middleware("http")
+    async def revalidate_static_assets(request: Request, call_next):
+        """Stop the browser reusing stale copies of the frontend modules.
+
+        This is a local development host, and the frontend is a set of native ES
+        modules that import each other by name. A browser that keeps one of them
+        while fetching another can end up linking a fresh module against a stale
+        one, which fails at link time and silently leaves the whole page without
+        any event listeners: buttons simply stop responding, with no visible
+        error unless the console is open. Requiring revalidation costs one
+        conditional request per file and removes that failure mode entirely.
+
+        The scene endpoints set their own cache headers and are left alone.
+        """
+        response = await call_next(request)
+        if not request.url.path.startswith("/viewer-api/"):
+            response.headers.setdefault("Cache-Control", "no-cache")
+        return response
+
     # API routes must be registered before this catch-all static mount.
     app.mount("/", StaticFiles(directory=str(webapp_dir), html=True), name="webapp")
     return app
