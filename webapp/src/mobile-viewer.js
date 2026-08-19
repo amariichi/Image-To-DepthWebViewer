@@ -32,6 +32,7 @@ import {
   createRateMeter,
   loadFrontCameraMirrorX,
   inferFrontCameraXyGain,
+  probeMotionCapabilities,
   saveFrontCameraMirrorX,
 } from './mobile-runtime.js';
 import { fetchPublishedScenePair } from './mobile-scene-client.js';
@@ -98,6 +99,7 @@ const state = {
   reducedAvailable: null,
   depthSpan: 1,
   disparityBlend: DEFAULT_DISPARITY_BLEND,
+  motionCapabilities: null,
   anchorVisibleFront: true,
   refitDepthToView: true,
   baseDepthRange: null,
@@ -132,6 +134,17 @@ function requestRender() {
     renderRate.mark(timestamp);
     updateDebugReadout();
   });
+}
+
+function describeMotionCapabilities() {
+  const capabilities = state.motionCapabilities;
+  if (!capabilities) return 'probing…';
+  return [
+    `immersive-ar ${capabilities.immersiveAr ? 'yes' : 'no'}`,
+    `orientation ${capabilities.deviceOrientation ? 'yes' : 'no'}`,
+    `motion ${capabilities.deviceMotion ? 'yes' : 'no'}`,
+    capabilities.needsMotionPermission ? 'permission required' : 'no permission gate',
+  ].join('  ');
 }
 
 function updateDebugReadout() {
@@ -175,6 +188,7 @@ function updateDebugReadout() {
     `viewing ${viewingDistanceMm.toFixed(0)} mm  eyeZ ${(state.geometry?.baselineEyeZ ?? 0).toFixed(2)}  fov ${(state.geometry?.verticalFovDeg ?? 0).toFixed(1)}°  head ${metrics.headDistanceMm ? `${metrics.headDistanceMm.toFixed(0)} mm` : '—'}`,
     `depth span ${state.depthSpan.toFixed(2)}  cone splay ${coneSplay.toFixed(2)}x  disparity blend ${state.disparityBlend.toFixed(2)}  uniform-scale span ${uniformSpan === null ? '—' : uniformSpan.toFixed(1)}`,
     `visible-front anchor ${state.anchorVisibleFront ? `on  pulled ${state.visibleFrontCorrection.toFixed(3)}` : 'off'}`,
+    `sensors ${describeMotionCapabilities()}`,
     `depth range ${state.scene ? `${state.scene.sourceDepth.near.toFixed(2)}–${state.scene.sourceDepth.far.toFixed(2)}${state.scene.depthRangeIsFitted ? ' (refit to view)' : ''}` : '—'}`,
   ].join('\n');
 }
@@ -723,6 +737,13 @@ if (debugTracking) {
     requestRender();
   });
   syncDebugControls();
+}
+
+if (debugTracking) {
+  void probeMotionCapabilities().then((capabilities) => {
+    state.motionCapabilities = capabilities;
+    updateDebugReadout();
+  });
 }
 
 void loadPublishedScene();

@@ -5,6 +5,7 @@ import {
   TRACKING_MIRROR_STORAGE_KEY,
   classifyViewport,
   createRateMeter,
+  probeMotionCapabilities,
   inferFrontCameraMirrorX,
   inferFrontCameraXyGain,
   loadFrontCameraMirrorX,
@@ -57,3 +58,46 @@ test('a saved handedness override wins over browser inference', () => {
   assert.equal(values.get(TRACKING_MIRROR_STORAGE_KEY), 'false');
   assert.equal(loadFrontCameraMirrorX(storage, 'CriOS'), false);
 });
+
+
+test('the motion capability probe reports what a device can actually offer', () => Promise.all([
+  (async () => {
+    // A device with visual-inertial tracking: position holds over time, so a
+    // model can be left standing in the room and walked around.
+    const capable = await probeMotionCapabilities({
+      xr: { isSessionSupported: async (mode) => mode === 'immersive-ar' },
+      orientationEvent: function DeviceOrientationEvent() {},
+      motionEvent: function DeviceMotionEvent() {},
+    });
+    assert.equal(capable.immersiveAr, true);
+    assert.equal(capable.needsMotionPermission, false);
+  })(),
+  (async () => {
+    // iOS: orientation and motion exist but are gated behind a user gesture,
+    // and there is no immersive-ar at all.
+    const gated = function DeviceOrientationEvent() {};
+    gated.requestPermission = async () => 'granted';
+    const ios = await probeMotionCapabilities({
+      xr: undefined,
+      orientationEvent: gated,
+      motionEvent: function DeviceMotionEvent() {},
+    });
+    assert.equal(ios.immersiveAr, false);
+    assert.equal(ios.deviceOrientation, true);
+    assert.equal(ios.needsMotionPermission, true);
+  })(),
+  (async () => {
+    // A probe that throws must report no support rather than break the page.
+    const hostile = await probeMotionCapabilities({
+      xr: { isSessionSupported: async () => { throw new Error('denied'); } },
+      orientationEvent: undefined,
+      motionEvent: undefined,
+    });
+    assert.deepEqual(hostile, {
+      immersiveAr: false,
+      deviceOrientation: false,
+      deviceMotion: false,
+      needsMotionPermission: false,
+    });
+  })(),
+]));

@@ -69,3 +69,34 @@ export function createRateMeter({ windowMs = 1000 } = {}) {
     },
   };
 }
+
+
+// What this device could offer beyond the front camera, reported so the question
+// can be settled by looking rather than by argument.
+//
+// Position is the part that decides whether a model can be left standing in the
+// room and walked around. Integrating an accelerometer twice cannot provide it:
+// the error grows as the square of time, and it is dominated not by sensor bias
+// but by gravity leaking through attitude error, where a tenth of a degree of
+// tilt already contributes 17 mg. Only visual-inertial tracking, which is what
+// `immersive-ar` exposes, holds position over tens of seconds.
+export async function probeMotionCapabilities({
+  xr = globalThis.navigator?.xr,
+  orientationEvent = globalThis.DeviceOrientationEvent,
+  motionEvent = globalThis.DeviceMotionEvent,
+} = {}) {
+  let immersiveAr = false;
+  try {
+    immersiveAr = Boolean(await xr?.isSessionSupported?.('immersive-ar'));
+  } catch {
+    immersiveAr = false;
+  }
+  return {
+    immersiveAr,
+    deviceOrientation: Boolean(orientationEvent),
+    deviceMotion: Boolean(motionEvent),
+    // iOS gates both behind a call made from a user gesture.
+    needsMotionPermission: typeof orientationEvent?.requestPermission === 'function'
+      || typeof motionEvent?.requestPermission === 'function',
+  };
+}
