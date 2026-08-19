@@ -4,11 +4,15 @@ import {
   computeEyeViewMatrix,
   computeOffAxisProjection,
   computeVirtualScreen,
+  transformBounds,
 } from './head-coupled-projection.js';
+import { mat4 } from './rendering.js';
 import { createTouchInteraction } from './mobile-interaction.js';
 import {
   DEFAULT_DISPARITY_BLEND,
+  anchorVisibleFrontToScreen,
   constrainReliefBehindScreen,
+  findVisibleDepthRange,
   createReliefInteractionMatrix,
   createMobileReliefScene,
   estimateUniformScaleDepthSpan,
@@ -49,6 +53,8 @@ const debugSpanInput = document.getElementById('debug-span');
 const debugSpanValue = document.getElementById('debug-span-value');
 const debugBlendInput = document.getElementById('debug-blend');
 const debugBlendValue = document.getElementById('debug-blend-value');
+const debugAnchorInput = document.getElementById('debug-anchor');
+const debugRefitInput = document.getElementById('debug-refit');
 const debugTracking = new URLSearchParams(window.location.search).has('debug');
 let trackingMirrorX = loadFrontCameraMirrorX(window.localStorage, navigator.userAgent);
 const trackingXyGain = inferFrontCameraXyGain(navigator.userAgent);
@@ -83,6 +89,12 @@ const state = {
   reducedAvailable: null,
   depthSpan: 1,
   disparityBlend: DEFAULT_DISPARITY_BLEND,
+  anchorVisibleFront: true,
+  refitDepthToView: true,
+  baseDepthRange: null,
+  visibleFrontCorrection: 0,
+  fittedDepthRange: null,
+  refitHandle: null,
 };
 const renderRate = createRateMeter({ windowMs: 1200 });
 document.body.dataset.orientation = state.orientation;
@@ -141,6 +153,8 @@ function updateDebugReadout() {
     `screen ${screenMetrics.label} (${screenMetrics.source})  ${(state.geometry?.screenHeightMm ?? 0).toFixed(0)} mm tall  1 unit ${(state.geometry?.worldUnitMm ?? 0).toFixed(1)} mm`,
     `viewing ${viewingDistanceMm.toFixed(0)} mm  eyeZ ${(state.geometry?.baselineEyeZ ?? 0).toFixed(2)}  fov ${(state.geometry?.verticalFovDeg ?? 0).toFixed(1)}°  head ${metrics.headDistanceMm ? `${metrics.headDistanceMm.toFixed(0)} mm` : '—'}`,
     `depth span ${state.depthSpan.toFixed(2)}  disparity blend ${state.disparityBlend.toFixed(2)}  uniform-scale span ${uniformSpan === null ? '—' : uniformSpan.toFixed(1)}`,
+    `visible-front anchor ${state.anchorVisibleFront ? `on  pulled ${state.visibleFrontCorrection.toFixed(3)}` : 'off'}`,
+    `depth range ${state.scene ? `${state.scene.sourceDepth.near.toFixed(2)}–${state.scene.sourceDepth.far.toFixed(2)}${state.scene.depthRangeIsFitted ? ' (refit to view)' : ''}` : '—'}`,
   ].join('\n');
 }
 
@@ -224,6 +238,78 @@ function currentBaselineEyeZ() {
   return state.geometry?.baselineEyeZ || refreshViewingGeometry().baselineEyeZ;
 }
 
+// The query projection must use the calibrated eye rather than the live one, or
+// the model would swim about as the viewer's head moved.
+function calibratedViewProjection(screen, transformedBounds) {
+  const calibrated = { x: 0, y: 0, z: currentBaselineEyeZ() };
+  const projectionMatrix = computeOffAxisProjection({
+    eye: calibrated,
+    screenHalfWidth: screen.halfWidth,
+    screenHalfHeight: screen.halfHeight,
+    near: 0.05,
+    far: Math.max(10, calibrated.z - transformedBounds.min[2] + 2),
+  }).projectionMatrix;
+  return mat4.multiply(projectionMatrix, computeEyeViewMatrix(calibrated));
+}
+
+// Rebuilds the relief over the depth range that is actually on screen.
+//
+// Zooming into something distant is the case this exists for. In a room with a
+// person at 1 m and balloons on a wall at 4 m, the balloons' own 10 cm of depth
+// is under one percent of the scene's depth budget, so they stay flat however
+// the relief is anchored. Rebuilt over just their range they receive all of it.
+//
+// This runs after a gesture settles rather than during it, because it rebuilds
+// every vertex and re-uploads the buffers.
+function refitDepthToVisibleRange() {
+  if (!state.refitDepthToView || !state.scene || !state.sourceScene) return;
+  const aspect = Math.max(canvas.clientWidth / Math.max(canvas.clientHeight, 1), 0.1);
+  const screen = computeVirtualScreen(aspect);
+  const pivotZ = state.scene.frontZ ?? 0;
+  const touchTransform = createReliefInteractionMatrix({
+    interaction: state.interaction,
+    frontZ: pivotZ,
+    depthSpan: state.scene.depthSpan || state.depthSpan,
+    eyeZ: currentBaselineEyeZ(),
+  });
+  const safeModel = constrainReliefBehindScreen({
+    bounds: state.scene.bounds,
+    modelMatrix: touchTransform,
+  });
+  const visible = findVisibleDepthRange({
+    frontSamples: state.scene.frontSamples,
+    modelMatrix: safeModel.modelMatrix,
+    viewProjectionMatrix: calibratedViewProjection(screen, safeModel.transformedBounds),
+  });
+  if (!visible) return;
+  // The per-cell records hold raw source depths, so a refit must be clamped back
+  // to the range the outlier quantiles chose. Without this, refitting would
+  // quietly widen the range again and undo the outlier rejection.
+  const base = state.baseDepthRange;
+  const near = base ? Math.max(visible.near, base.near) : visible.near;
+  const far = base ? Math.min(visible.far, base.far) : visible.far;
+  if (!(far > near)) return;
+  const current = state.scene.sourceDepth;
+  const currentSpan = current.far - current.near;
+  const visibleSpan = far - near;
+  // Rebuilding is only worth its cost when the visible range is meaningfully
+  // narrower than the one already in use. The comparison also stops the rebuild
+  // from feeding back on itself, because refitting does not change which cells
+  // are on screen.
+  const narrowedEnough = visibleSpan < currentSpan * 0.9;
+  const shiftedEnough = Math.abs(near - current.near) > currentSpan * 0.05;
+  if (!narrowedEnough && !shiftedEnough) return;
+  state.fittedDepthRange = { near, far };
+  rebuildReliefGeometry();
+  requestRender();
+}
+
+function scheduleDepthRefit() {
+  if (!state.refitDepthToView) return;
+  window.clearTimeout(state.refitHandle);
+  state.refitHandle = window.setTimeout(refitDepthToVisibleRange, 250);
+}
+
 function computeHeadCoupledMatrices(scene, interaction, eyePose) {
   const aspect = Math.max(canvas.clientWidth / Math.max(canvas.clientHeight, 1), 0.1);
   const screen = computeVirtualScreen(aspect);
@@ -242,10 +328,30 @@ function computeHeadCoupledMatrices(scene, interaction, eyePose) {
     depthSpan: scene.depthSpan || state.depthSpan,
     eyeZ: eye.z,
   });
-  const safeModel = constrainReliefBehindScreen({
+  let safeModel = constrainReliefBehindScreen({
     bounds: scene.bounds,
     modelMatrix: touchTransform,
   });
+  // Once the viewer pinches into part of the scene, the nearest thing still on
+  // screen may sit deep inside the relief, and everything in view then shares a
+  // large common slide that carries no shape information. Pulling the visible
+  // front up to the glass removes that common part and puts the view back on
+  // the steepest part of the parallax curve.
+  if (state.anchorVisibleFront) {
+    const anchored = anchorVisibleFrontToScreen({
+      frontSamples: scene.frontSamples,
+      modelMatrix: safeModel.modelMatrix,
+      viewProjectionMatrix: calibratedViewProjection(screen, safeModel.transformedBounds),
+    });
+    if (anchored) {
+      safeModel = {
+        modelMatrix: anchored.modelMatrix,
+        transformedBounds: transformBounds(scene.bounds, anchored.modelMatrix),
+        correctionZ: safeModel.correctionZ + anchored.correctionZ,
+      };
+      state.visibleFrontCorrection = anchored.correctionZ;
+    }
+  }
   // No geometry is ever allowed in front of the glass, so nothing can be nearer
   // than the eye's own distance. Pushing the near plane out accordingly keeps
   // depth precision usable even when the relief is set several screen heights
@@ -279,11 +385,17 @@ function rebuildReliefGeometry({ upload = true } = {}) {
     baselineEyeZ: refreshViewingGeometry().baselineEyeZ,
     depthSpan: state.depthSpan,
     disparityBlend: state.disparityBlend,
+    depthRange: state.fittedDepthRange,
     // The virtual glass is the invariant pivot plane. Legacy manifests may
     // contain a small offset, but no published relief is allowed to move it.
     frontZ: 0,
     occupancy: state.manifest?.screenOccupancy ?? 0.92,
   });
+  // The first build of a scene establishes the outlier-trimmed range that every
+  // later refit is clamped to.
+  if (!state.scene.depthRangeIsFitted) {
+    state.baseDepthRange = { ...state.scene.sourceDepth };
+  }
   if (upload) renderer.updateGeometry(state.scene);
 }
 
@@ -345,6 +457,8 @@ async function loadPublishedScene({ force = false, variant = state.variant } = {
       height: image.naturalHeight || image.height,
     };
     state.variant = servedVariant || variant;
+    state.fittedDepthRange = null;
+    state.baseDepthRange = null;
     state.reducedAvailable = Boolean(envelope.hasReduced);
     state.manifest = envelope.manifest;
     state.depthSpan = Number.isFinite(envelope.manifest?.depthSpan)
@@ -385,6 +499,13 @@ async function loadPublishedScene({ force = false, variant = state.variant } = {
 const touch = createTouchInteraction(canvas, {
   onChange(interaction) {
     state.interaction = interaction;
+    // When the view returns to the whole image the relief goes back to the full
+    // scene, so zooming out always undoes a refit.
+    if (interaction.scale <= 1.01 && state.fittedDepthRange) {
+      state.fittedDepthRange = null;
+      rebuildReliefGeometry();
+    }
+    scheduleDepthRefit();
     requestRender();
   },
 });
@@ -515,6 +636,8 @@ function syncDebugControls() {
   debugSpanValue.textContent = state.depthSpan.toFixed(2);
   debugBlendInput.value = state.disparityBlend.toFixed(2);
   debugBlendValue.textContent = state.disparityBlend.toFixed(2);
+  debugAnchorInput.checked = state.anchorVisibleFront;
+  debugRefitInput.checked = state.refitDepthToView;
 }
 
 if (debugTracking) {
@@ -540,6 +663,21 @@ if (debugTracking) {
     state.disparityBlend = Number(debugBlendInput.value);
     syncDebugControls();
     rebuildReliefGeometry();
+    requestRender();
+  });
+  debugRefitInput.addEventListener('change', () => {
+    state.refitDepthToView = debugRefitInput.checked;
+    if (!state.refitDepthToView && state.fittedDepthRange) {
+      state.fittedDepthRange = null;
+      rebuildReliefGeometry();
+    }
+    syncDebugControls();
+    requestRender();
+  });
+  debugAnchorInput.addEventListener('change', () => {
+    state.anchorVisibleFront = debugAnchorInput.checked;
+    state.visibleFrontCorrection = 0;
+    syncDebugControls();
     requestRender();
   });
   syncDebugControls();

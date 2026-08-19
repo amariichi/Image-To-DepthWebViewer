@@ -422,3 +422,14 @@ body[data-state="tracking-error"] .startup-panel .intro {
   color: var(--paper);
   font-variant-numeric: tabular-nums;
 }
+
+.debug-controls .debug-toggle {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 2px;
+}
+
+.debug-controls .debug-toggle input {
+  accent-color: var(--signal);
+}

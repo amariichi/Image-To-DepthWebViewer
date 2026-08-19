@@ -25,6 +25,25 @@ export const MAX_RELIEF_DEPTH_RATIO = 0.25;
 
 const MIN_INTERACTION_Z_SCALE = 0.25;
 
+// A coarse grid holding the nearest sample of each image cell. It is what makes
+// the "nearest visible sample" query cheap enough to run every frame: a few
+// thousand points instead of a quarter of a million.
+export const FRONT_SAMPLE_COLUMNS = 64;
+export const FRONT_SAMPLE_ROWS = 48;
+
+// How far outside the viewport a sample still counts as visible. Without a
+// margin, geometry just off the edge could be pulled in front of the glass and
+// then swing into view as the head moves, where it would show reversed
+// parallax.
+export const VISIBLE_FRONT_MARGIN = 1.15;
+
+// Each cell stores its nearest relief point (x, y, z) plus the near and far
+// source depths it covers. The positions answer "what is the nearest thing
+// still on screen"; the source depths answer "what depth range is on screen",
+// which is what lets the relief be rebuilt to spend its whole budget on
+// whatever the viewer has zoomed into.
+export const FRONT_SAMPLE_STRIDE = 5;
+
 function finitePositive(value, label) {
   if (!Number.isFinite(value) || !(value > 0)) {
     throw new Error(`${label} must be positive and finite.`);
@@ -123,6 +142,9 @@ export function createMobileReliefScene({
   disparityBlend = DEFAULT_DISPARITY_BLEND,
   nearQuantile = DEFAULT_NEAR_QUANTILE,
   farQuantile = DEFAULT_FAR_QUANTILE,
+  // When the viewer has zoomed into part of the scene, the relief is rebuilt
+  // over just that depth range so the whole budget is spent on what is visible.
+  depthRange = null,
 }) {
   const positions = scene?.positions;
   const uvs = scene?.uvs;
@@ -136,8 +158,18 @@ export function createMobileReliefScene({
   finitePositive(depthSpan, 'depthSpan');
   const safeFrontZ = Math.min(Number.isFinite(frontZ) ? frontZ : 0, 0);
   const imageRect = fitImageRect(sourceAspect, screenWidth, screenHeight, occupancy);
-  const sourceDepth = computeReliefDepthRange(positions, { nearQuantile, farQuantile });
+  const depthRangeIsFitted = Boolean(
+    depthRange && depthRange.near > 0 && depthRange.far > depthRange.near,
+  );
+  const sourceDepth = depthRangeIsFitted
+    ? { near: depthRange.near, far: depthRange.far }
+    : computeReliefDepthRange(positions, { nearQuantile, farQuantile });
   const reliefPositions = new Float32Array(positions.length);
+  // Nearest sample per image cell, accumulated in the same pass that builds the
+  // relief so it costs no extra traversal.
+  const cellCount = FRONT_SAMPLE_COLUMNS * FRONT_SAMPLE_ROWS;
+  const frontSamples = new Float32Array(cellCount * FRONT_SAMPLE_STRIDE);
+  const frontFilled = new Uint8Array(cellCount);
 
   for (let vertex = 0; vertex < positions.length / 3; vertex += 1) {
     const positionOffset = vertex * 3;
@@ -155,18 +187,60 @@ export function createMobileReliefScene({
     // its own image-plane anchor. Projecting from that eye therefore reproduces
     // the source image exactly, whatever depth span or mapping is chosen.
     const rayScale = (baselineEyeZ - z) / baselineEyeZ;
-    reliefPositions[positionOffset] = screenX * rayScale;
-    reliefPositions[positionOffset + 1] = screenY * rayScale;
+    const worldX = screenX * rayScale;
+    const worldY = screenY * rayScale;
+    reliefPositions[positionOffset] = worldX;
+    reliefPositions[positionOffset + 1] = worldY;
     reliefPositions[positionOffset + 2] = z;
+
+    const column = clamp(
+      Math.floor(uvs[uvOffset] * FRONT_SAMPLE_COLUMNS),
+      0,
+      FRONT_SAMPLE_COLUMNS - 1,
+    );
+    const row = clamp(
+      Math.floor(uvs[uvOffset + 1] * FRONT_SAMPLE_ROWS),
+      0,
+      FRONT_SAMPLE_ROWS - 1,
+    );
+    const cell = row * FRONT_SAMPLE_COLUMNS + column;
+    const base = cell * FRONT_SAMPLE_STRIDE;
+    if (!frontFilled[cell]) {
+      frontFilled[cell] = 1;
+      frontSamples[base] = worldX;
+      frontSamples[base + 1] = worldY;
+      frontSamples[base + 2] = z;
+      frontSamples[base + 3] = depth;
+      frontSamples[base + 4] = depth;
+    } else {
+      if (z > frontSamples[base + 2]) {
+        frontSamples[base] = worldX;
+        frontSamples[base + 1] = worldY;
+        frontSamples[base + 2] = z;
+      }
+      if (depth < frontSamples[base + 3]) frontSamples[base + 3] = depth;
+      if (depth > frontSamples[base + 4]) frontSamples[base + 4] = depth;
+    }
+  }
+
+  const usedCells = [];
+  for (let cell = 0; cell < cellCount; cell += 1) {
+    if (!frontFilled[cell]) continue;
+    const base = cell * FRONT_SAMPLE_STRIDE;
+    for (let field = 0; field < FRONT_SAMPLE_STRIDE; field += 1) {
+      usedCells.push(frontSamples[base + field]);
+    }
   }
 
   return {
     ...scene,
     positions: reliefPositions,
     nodeMatrix: null,
+    frontSamples: new Float32Array(usedCells),
     bounds: computeBounds(reliefPositions),
     frontZ: safeFrontZ,
     depthSpan,
+    depthRangeIsFitted,
     disparityBlend: clamp(disparityBlend, 0, 1),
     imageRect,
     sourceDepth,
@@ -236,6 +310,105 @@ export function createReliefInteractionMatrix({
   matrix = mat4.scaleAxes(matrix, [scale, scale, zScale]);
   matrix = mat4.translate(matrix, [0, 0, -frontZ]);
   return matrix;
+}
+
+// Pulls whatever is currently on screen forward until its nearest sample sits on
+// the glass.
+//
+// Motion parallax that is common to everything in view carries no shape
+// information; only the differences between points do. When the viewer pinches
+// into a region that sits deep inside the relief, almost all of its motion is
+// common: at an eye distance of 4.6 units a region spanning 3.7 to 4.0 units
+// behind the glass slides by 44.6 percent of the head movement while differing
+// internally by only 1.9 percent, which reads as a flat card sliding. Moving
+// that region up to the glass removes the common part entirely and raises the
+// difference to 6.1 percent, because the parallax curve is steepest at the
+// glass.
+//
+// The projection used here must be the calibrated one, not the live eye, or the
+// model would swim about as the viewer's head moved.
+export function anchorVisibleFrontToScreen({
+  frontSamples,
+  modelMatrix,
+  viewProjectionMatrix,
+  screenZ = 0,
+  margin = VISIBLE_FRONT_MARGIN,
+}) {
+  if (!(frontSamples instanceof Float32Array) || frontSamples.length < FRONT_SAMPLE_STRIDE) {
+    return null;
+  }
+  if (!viewProjectionMatrix || viewProjectionMatrix.length !== 16) return null;
+  let visibleFrontZ = -Infinity;
+  let visibleCount = 0;
+  for (let index = 0; index < frontSamples.length; index += FRONT_SAMPLE_STRIDE) {
+    const point = mat4.transformPoint(modelMatrix, [
+      frontSamples[index],
+      frontSamples[index + 1],
+      frontSamples[index + 2],
+    ]);
+    const clipW = viewProjectionMatrix[3] * point[0]
+      + viewProjectionMatrix[7] * point[1]
+      + viewProjectionMatrix[11] * point[2]
+      + viewProjectionMatrix[15];
+    if (!(clipW > 1e-6)) continue;
+    const ndcX = (viewProjectionMatrix[0] * point[0] + viewProjectionMatrix[4] * point[1]
+      + viewProjectionMatrix[8] * point[2] + viewProjectionMatrix[12]) / clipW;
+    const ndcY = (viewProjectionMatrix[1] * point[0] + viewProjectionMatrix[5] * point[1]
+      + viewProjectionMatrix[9] * point[2] + viewProjectionMatrix[13]) / clipW;
+    if (Math.abs(ndcX) > margin || Math.abs(ndcY) > margin) continue;
+    visibleCount += 1;
+    if (point[2] > visibleFrontZ) visibleFrontZ = point[2];
+  }
+  if (!visibleCount || !Number.isFinite(visibleFrontZ)) return null;
+  const correctionZ = screenZ - visibleFrontZ;
+  const safeMatrix = correctionZ === 0
+    ? new Float32Array(modelMatrix)
+    : mat4.multiply(mat4.translate(mat4.identity(), [0, 0, correctionZ]), modelMatrix);
+  return { modelMatrix: safeMatrix, correctionZ, visibleFrontZ, visibleCount };
+}
+
+// The source depth range covered by whatever is currently on screen.
+//
+// Zooming into a distant part of a scene is the case this exists for. In a room
+// with a person at 1 m and balloons on a wall at 4 m, the balloons' own 10 cm of
+// depth is 0.85 percent of the scene's depth budget, so they stay flat however
+// the relief is anchored. Rebuilding the relief over just their depth range
+// gives them the whole budget instead.
+export function findVisibleDepthRange({
+  frontSamples,
+  modelMatrix,
+  viewProjectionMatrix,
+  margin = VISIBLE_FRONT_MARGIN,
+}) {
+  if (!(frontSamples instanceof Float32Array) || frontSamples.length < FRONT_SAMPLE_STRIDE) {
+    return null;
+  }
+  if (!viewProjectionMatrix || viewProjectionMatrix.length !== 16) return null;
+  let near = Infinity;
+  let far = -Infinity;
+  let visibleCount = 0;
+  for (let index = 0; index < frontSamples.length; index += FRONT_SAMPLE_STRIDE) {
+    const point = mat4.transformPoint(modelMatrix, [
+      frontSamples[index],
+      frontSamples[index + 1],
+      frontSamples[index + 2],
+    ]);
+    const clipW = viewProjectionMatrix[3] * point[0]
+      + viewProjectionMatrix[7] * point[1]
+      + viewProjectionMatrix[11] * point[2]
+      + viewProjectionMatrix[15];
+    if (!(clipW > 1e-6)) continue;
+    const ndcX = (viewProjectionMatrix[0] * point[0] + viewProjectionMatrix[4] * point[1]
+      + viewProjectionMatrix[8] * point[2] + viewProjectionMatrix[12]) / clipW;
+    const ndcY = (viewProjectionMatrix[1] * point[0] + viewProjectionMatrix[5] * point[1]
+      + viewProjectionMatrix[9] * point[2] + viewProjectionMatrix[13]) / clipW;
+    if (Math.abs(ndcX) > margin || Math.abs(ndcY) > margin) continue;
+    visibleCount += 1;
+    near = Math.min(near, frontSamples[index + 3]);
+    far = Math.max(far, frontSamples[index + 4]);
+  }
+  if (!visibleCount || !(near > 0) || !(far > near)) return null;
+  return { near, far, visibleCount };
 }
 
 export function constrainReliefBehindScreen({

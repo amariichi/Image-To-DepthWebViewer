@@ -5,7 +5,10 @@ import {
   MAX_RELIEF_DEPTH_RATIO,
   computeReliefDepthRange,
   constrainReliefBehindScreen,
+  FRONT_SAMPLE_STRIDE,
+  anchorVisibleFrontToScreen,
   createReliefInteractionMatrix,
+  findVisibleDepthRange,
   createMobileReliefScene,
   estimateUniformScaleDepthSpan,
   normalizeReliefDepth,
@@ -252,4 +255,187 @@ test('the uniform-scale span reports how much a scene is being compressed', () =
   assert.equal(estimateUniformScaleDepthSpan({
     sourceDepth: { near: 2, far: 10 }, imageRectHeight: 1, captureFovDeg: null,
   }), null);
+});
+
+
+function viewProjection(eye = { x: 0, y: 0, z: 4.6 }) {
+  const { projectionMatrix } = computeOffAxisProjection({
+    eye,
+    screenHalfWidth: 1,
+    screenHalfHeight: 1,
+    near: 0.05,
+    far: 40,
+  });
+  return mat4.multiply(projectionMatrix, computeEyeViewMatrix(eye));
+}
+
+
+test('anchoring pulls the nearest sample still on screen up to the glass', () => {
+  // Two cells: one deep inside the relief and on screen, one nearer but far off
+  // to the side. Only the on-screen one may set the anchor.
+  // Fields per cell: x, y, nearest z, near source depth, far source depth.
+  const frontSamples = new Float32Array([
+    0, 0, -3.7, 3.9, 4.0,
+    20, 0, -0.1, 1.0, 1.1,
+  ]);
+  const anchored = anchorVisibleFrontToScreen({
+    frontSamples,
+    modelMatrix: mat4.identity(),
+    viewProjectionMatrix: viewProjection(),
+  });
+  assert.equal(anchored.visibleCount, 1, 'the off-screen sample must not anchor the model');
+  assert.ok(Math.abs(anchored.visibleFrontZ + 3.7) < 1e-6);
+  assert.ok(Math.abs(anchored.correctionZ - 3.7) < 1e-6);
+  const moved = mat4.transformPoint(anchored.modelMatrix, [0, 0, -3.7]);
+  assert.ok(Math.abs(moved[2]) < 1e-6, 'the visible front must land exactly on the glass');
+});
+
+
+test('anchoring removes common-mode slide and raises the parallax that shows shape', () => {
+  // Motion parallax common to everything in view carries no shape information.
+  // A region sitting 3.7 to 4.0 units behind the glass slides almost half a head
+  // movement while differing internally by under two percent, which reads as a
+  // flat card sliding rather than as depth.
+  const eyeZ = 4.6;
+  const parallax = (depth) => depth / (eyeZ + depth);
+
+  const before = { near: parallax(3.7), far: parallax(4.0) };
+  const after = { near: parallax(0), far: parallax(0.3) };
+
+  assert.ok(before.near > 0.4, 'the deep region starts with a large common slide');
+  assert.ok(Math.abs(after.near) < 1e-9, 'anchoring removes the common slide entirely');
+  const differentialBefore = before.far - before.near;
+  const differentialAfter = after.far - after.near;
+  assert.ok(
+    differentialAfter > differentialBefore * 2.5,
+    `expected the shape-carrying parallax to grow, got ${differentialBefore} -> ${differentialAfter}`,
+  );
+});
+
+
+test('a fully visible relief is already anchored, so nothing moves', () => {
+  // At no zoom the whole image is on screen and the nearest sample is already on
+  // the glass, so the anchor must be a no-op rather than a regression.
+  const frontSamples = new Float32Array([
+    0, 0, 0, 1, 1.2,
+    0.2, 0.1, -0.5, 1.2, 2,
+  ]);
+  const anchored = anchorVisibleFrontToScreen({
+    frontSamples,
+    modelMatrix: mat4.identity(),
+    viewProjectionMatrix: viewProjection(),
+  });
+  assert.equal(anchored.correctionZ, 0);
+  assert.equal(anchored.visibleCount, 2);
+});
+
+
+test('anchoring reports nothing when it has no samples to work from', () => {
+  assert.equal(anchorVisibleFrontToScreen({
+    frontSamples: new Float32Array([0, 0, -1, 1, 2]),
+    modelMatrix: mat4.identity(),
+    viewProjectionMatrix: null,
+  }), null);
+  assert.equal(anchorVisibleFrontToScreen({
+    frontSamples: null,
+    modelMatrix: mat4.identity(),
+    viewProjectionMatrix: viewProjection(),
+  }), null);
+  // Everything off screen: the caller must fall back to the global constraint.
+  assert.equal(anchorVisibleFrontToScreen({
+    frontSamples: new Float32Array([50, 50, -1, 1, 2]),
+    modelMatrix: mat4.identity(),
+    viewProjectionMatrix: viewProjection(),
+  }), null);
+});
+
+
+test('the relief carries a front sample grid covering the whole image', () => {
+  const relief = createMobileReliefScene({
+    scene: sourceScene,
+    sourceAspect: 1,
+    screenWidth: 2,
+    screenHeight: 2,
+    baselineEyeZ: 4.6,
+    depthSpan: 1,
+  });
+  assert.ok(relief.frontSamples instanceof Float32Array);
+  assert.equal(relief.frontSamples.length % FRONT_SAMPLE_STRIDE, 0);
+  assert.ok(relief.frontSamples.length >= FRONT_SAMPLE_STRIDE);
+  let nearest = -Infinity;
+  for (let index = 0; index < relief.frontSamples.length; index += FRONT_SAMPLE_STRIDE) {
+    // Every stored point is a real relief point, never in front of the glass.
+    assert.ok(relief.frontSamples[index + 2] <= 1e-6);
+    assert.ok(relief.frontSamples[index + 2] >= -1 - 1e-6);
+    // Each cell also records the source depth range it covers.
+    assert.ok(relief.frontSamples[index + 3] > 0);
+    assert.ok(relief.frontSamples[index + 4] >= relief.frontSamples[index + 3]);
+    nearest = Math.max(nearest, relief.frontSamples[index + 2]);
+  }
+  // The nearest stored sample must equal the relief's own front plane.
+  assert.ok(Math.abs(nearest - relief.bounds.max[2]) < 1e-6);
+});
+
+
+test('refitting depth to a zoomed-in region gives it the whole relief budget', () => {
+  // A room with a person at 1 m and balloons on a wall at 4 m. Across the whole
+  // scene the balloons' own 10 cm of depth is under one percent of the budget,
+  // so they stay flat no matter where the relief is anchored.
+  const wholeScene = { near: 1, far: 4 };
+  const balloonsShare = normalizeReliefDepth(4.0, wholeScene, 1)
+    - normalizeReliefDepth(3.9, wholeScene, 1);
+  assert.ok(balloonsShare < 0.01, `balloons received ${balloonsShare} of the budget`);
+
+  // Rebuilt over just the visible range, they receive all of it.
+  const zoomed = { near: 3.9, far: 4.0 };
+  const refittedShare = normalizeReliefDepth(4.0, zoomed, 1)
+    - normalizeReliefDepth(3.9, zoomed, 1);
+  assert.ok(Math.abs(refittedShare - 1) < 1e-9);
+});
+
+
+test('the visible depth range follows what is actually on screen', () => {
+  const frontSamples = new Float32Array([
+    0, 0, -0.99, 3.9, 4.0,       // balloons, on screen
+    0.1, 0.1, -0.98, 3.85, 3.95, // more balloons, on screen
+    30, 0, 0, 1.0, 1.2,          // the person, far off to the side
+  ]);
+  const visible = findVisibleDepthRange({
+    frontSamples,
+    modelMatrix: mat4.identity(),
+    viewProjectionMatrix: viewProjection(),
+  });
+  assert.equal(visible.visibleCount, 2);
+  assert.ok(Math.abs(visible.near - 3.85) < 1e-6);
+  assert.ok(Math.abs(visible.far - 4.0) < 1e-6);
+
+  // Nothing on screen means the caller must keep the range it already has.
+  assert.equal(findVisibleDepthRange({
+    frontSamples: new Float32Array([50, 50, -1, 1, 2]),
+    modelMatrix: mat4.identity(),
+    viewProjectionMatrix: viewProjection(),
+  }), null);
+});
+
+
+test('an explicit depth range overrides the quantile fit and is reported', () => {
+  const base = {
+    scene: sourceScene,
+    sourceAspect: 1,
+    screenWidth: 2,
+    screenHeight: 2,
+    baselineEyeZ: 4.6,
+    depthSpan: 1,
+  };
+  const automatic = createMobileReliefScene(base);
+  assert.equal(automatic.depthRangeIsFitted, false);
+
+  const fitted = createMobileReliefScene({ ...base, depthRange: { near: 2.5, far: 3 } });
+  assert.equal(fitted.depthRangeIsFitted, true);
+  assert.equal(fitted.sourceDepth.near, 2.5);
+  assert.equal(fitted.sourceDepth.far, 3);
+
+  // A nonsensical range must fall back to the automatic fit rather than throw.
+  const rejected = createMobileReliefScene({ ...base, depthRange: { near: 5, far: 1 } });
+  assert.equal(rejected.depthRangeIsFitted, false);
 });
