@@ -84,6 +84,21 @@ export function fitImageRect(sourceAspect, screenWidth, screenHeight, occupancy 
   return { width: height * sourceAspect, height };
 }
 
+// The perpendicular distance from the capture camera, not the distance along
+// the ray.
+//
+// The published mesh is `rayDirection * depth`, so a point's straight-line
+// distance from the camera grows as `1 / cos(theta)` toward the edges of the
+// frame even for a perfectly flat wall: 16 percent at the corners of a 32
+// degree capture, 27 percent at 50 degrees, 46 percent at 65 degrees. Feeding
+// that into the relief bows the whole image backwards at the edges, which reads
+// as the picture being wrapped onto the inside of a sphere and grows in
+// proportion to the depth span. Because `rayDirection.z` is `-cos(theta)`, the
+// z component already carries the perpendicular depth with that factor removed.
+export function perpendicularDepth(positions, vertex) {
+  return Math.max(-positions[vertex * 3 + 2], 1e-6);
+}
+
 export function computeReliefDepthRange(positions, {
   nearQuantile = DEFAULT_NEAR_QUANTILE,
   farQuantile = DEFAULT_FAR_QUANTILE,
@@ -93,8 +108,8 @@ export function computeReliefDepthRange(positions, {
     throw new Error('Relief depth quantiles must satisfy 0 <= near < far <= 1.');
   }
   const depths = [];
-  for (let index = 0; index < positions.length; index += 3) {
-    const depth = Math.hypot(positions[index], positions[index + 1], positions[index + 2]);
+  for (let vertex = 0; vertex < positions.length / 3; vertex += 1) {
+    const depth = perpendicularDepth(positions, vertex);
     if (!Number.isFinite(depth)) {
       throw new Error('Mobile relief source positions must be finite.');
     }
@@ -174,11 +189,7 @@ export function createMobileReliefScene({
   for (let vertex = 0; vertex < positions.length / 3; vertex += 1) {
     const positionOffset = vertex * 3;
     const uvOffset = vertex * 2;
-    const depth = Math.hypot(
-      positions[positionOffset],
-      positions[positionOffset + 1],
-      positions[positionOffset + 2],
-    );
+    const depth = perpendicularDepth(positions, vertex);
     const normalizedDepth = normalizeReliefDepth(depth, sourceDepth, disparityBlend);
     const z = safeFrontZ - normalizedDepth * depthSpan;
     const screenX = (uvs[uvOffset] - 0.5) * imageRect.width;

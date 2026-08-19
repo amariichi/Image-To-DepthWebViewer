@@ -138,8 +138,11 @@ function updateDebugReadout() {
     imageRectHeight: state.scene.imageRect?.height,
     captureFovDeg: state.manifest?.captureFovDeg,
   }) : null;
+  // Stated explicitly because the handedness of a front camera is the one thing
+  // here that cannot be settled by reasoning, only by looking at the number
+  // while moving. Moving to your own right must make x go positive.
   const poseLine = pose
-    ? `eye  x ${pose.x.toFixed(3)}  y ${pose.y.toFixed(3)}  z ${pose.z.toFixed(3)}`
+    ? `eye  x ${pose.x.toFixed(3)}  y ${pose.y.toFixed(3)}  z ${pose.z.toFixed(3)}   (move right → x should rise)`
     : 'eye  awaiting calibration';
   const firstPose = metrics.firstTrackedPoseMs === null
     ? '—'

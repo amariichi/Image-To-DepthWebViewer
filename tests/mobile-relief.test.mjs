@@ -439,3 +439,54 @@ test('an explicit depth range overrides the quantile fit and is reported', () =>
   const rejected = createMobileReliefScene({ ...base, depthRange: { near: 5, far: 1 } });
   assert.equal(rejected.depthRangeIsFitted, false);
 });
+
+
+test('a flat wall stays flat instead of bowing away at the edges', () => {
+  // The published mesh is rayDirection * depth, so a flat wall's straight-line
+  // distance from the camera grows as 1 / cos(theta) toward the edges of the
+  // frame. Using that distance bows the picture backwards at its edges, which
+  // reads as the image wrapped onto the inside of a sphere and gets worse in
+  // proportion to the relief depth.
+  const halfFov = (50 * Math.PI) / 360;
+  const cols = 9;
+  const rows = 9;
+  const wallDistance = 3;
+  const positions = new Float32Array(cols * rows * 3);
+  const uvs = new Float32Array(cols * rows * 2);
+  for (let row = 0; row < rows; row += 1) {
+    for (let col = 0; col < cols; col += 1) {
+      const index = row * cols + col;
+      const u = col / (cols - 1);
+      const v = row / (rows - 1);
+      // A ray through this pixel, hitting a wall perpendicular to the axis.
+      const tanX = (u - 0.5) * 2 * Math.tan(halfFov) * (4 / 3);
+      const tanY = (0.5 - v) * 2 * Math.tan(halfFov);
+      positions[index * 3] = tanX * wallDistance;
+      positions[index * 3 + 1] = tanY * wallDistance;
+      positions[index * 3 + 2] = -wallDistance;
+      uvs[index * 2] = u;
+      uvs[index * 2 + 1] = v;
+    }
+  }
+
+  // The straight-line distance really does vary a lot across this frame, so the
+  // test would fail loudly if the radial measure came back.
+  const corner = Math.hypot(positions[0], positions[1], positions[2]);
+  assert.ok(corner / wallDistance > 1.2, `corner ray is only ${corner / wallDistance} times the axis`);
+
+  const relief = createMobileReliefScene({
+    scene: { positions, uvs, indices: new Uint32Array(0) },
+    sourceAspect: 4 / 3,
+    screenWidth: 2,
+    screenHeight: 2,
+    baselineEyeZ: 4.6,
+    depthSpan: 8,
+  });
+  let minZ = Infinity;
+  let maxZ = -Infinity;
+  for (let index = 2; index < relief.positions.length; index += 3) {
+    minZ = Math.min(minZ, relief.positions[index]);
+    maxZ = Math.max(maxZ, relief.positions[index]);
+  }
+  assert.ok(maxZ - minZ < 1e-4, `a flat wall spread over ${maxZ - minZ} of relief depth`);
+});
