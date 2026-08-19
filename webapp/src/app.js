@@ -86,14 +86,6 @@ const DESIRED_NEAR = -2.0;
 // frame, where a Looking Glass clips it. Anchoring on the focal plane itself
 // overshot by roughly half the volume on a real device.
 const DEFAULT_LOOKING_GLASS_TARGET_DIAM = 3;
-// Measured on a Looking Glass Go. Sitting exactly on the front face reads as a
-// little too deep, and half a unit of pop-out is where it settled. One world
-// unit reads as roughly one metre of apparent scene depth on that display.
-const LOOKING_GLASS_POP_OUT = 0.5;
-// The same device frames the model about a quarter of a frame low, so it is
-// lifted by that fraction of the hologram volume. This is a framing offset of
-// the display, not of the model, so it does not scale with zoom.
-const LOOKING_GLASS_LIFT_FRACTION = 0.25;
 const MAG_MIN = 0.1;
 const MAG_MAX = 100;
 const MAG_DEFAULT = 0.5;
@@ -1674,7 +1666,7 @@ function setupXR() {
         invalidateModelMatrix();
         if (state.xr.mode === 'looking-glass') {
           showStatus(
-            `Looking Glass: nearest surface at z ${lookingGlassVolumeFrontZ().toFixed(2)}, lifted ${lookingGlassAutoTranslationY().toFixed(2)}; use Z Offset to adjust depth.`,
+            `Looking Glass: model front at z ${lookingGlassVolumeFrontZ().toFixed(2)}; frame ${describeLookingGlassFrame()}`,
             5000,
           );
         }
@@ -1791,9 +1783,31 @@ async function handleEnterVr() {
   }
 }
 
+// Where content sits inside a Looking Glass frame is the display's own business,
+// not the model's: the polyfill frames a volume of `targetDiam` around
+// `targetX/Y/Z` and renders it with `fovy`. Nudging the model instead only moves
+// it within a frame that is already fixed, which is why hand-tuned model offsets
+// had no visible effect. These are exposed on the URL so the framing can be
+// settled against real hardware, for example
+// `?lgTargetY=-0.5&lgTargetDiam=4`.
+const LOOKING_GLASS_CONFIG_KEYS = ['targetX', 'targetY', 'targetZ', 'targetDiam', 'fovy'];
+
+function lookingGlassConfigFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const config = {};
+  for (const key of LOOKING_GLASS_CONFIG_KEYS) {
+    const raw = params.get(`lg${key.charAt(0).toUpperCase()}${key.slice(1)}`);
+    if (raw === null) continue;
+    const value = Number(raw);
+    if (Number.isFinite(value)) config[key] = value;
+  }
+  return config;
+}
+
 async function handleEnterLookingGlass() {
   if (!xrManager) return;
-  const success = await xrManager.enterLookingGlass();
+  const overrides = lookingGlassConfigFromUrl();
+  const success = await xrManager.enterLookingGlass(overrides);
   if (!success) {
     showStatus('Looking Glass session could not start.', 4000);
   }
@@ -1878,11 +1892,17 @@ function lookingGlassTargetDiam() {
 }
 
 function lookingGlassVolumeFrontZ() {
-  return -lookingGlassTargetDiam() / 2 + LOOKING_GLASS_POP_OUT;
+  return -lookingGlassTargetDiam() / 2;
 }
 
-function lookingGlassAutoTranslationY() {
-  return lookingGlassTargetDiam() * LOOKING_GLASS_LIFT_FRACTION;
+function describeLookingGlassFrame() {
+  const config = xrManager?.lookingGlassConfig;
+  if (!config) return 'targetDiam 3 (defaults)';
+  const parts = LOOKING_GLASS_CONFIG_KEYS.map((key) => {
+    const value = Number(config[key]);
+    return Number.isFinite(value) ? `${key} ${value.toFixed(2)}` : null;
+  }).filter(Boolean);
+  return parts.length ? parts.join(', ') : 'defaults';
 }
 
 function lookingGlassAutoTranslationZ() {
@@ -1896,17 +1916,13 @@ function computeModelMatrix() {
     return state.render.modelMatrix;
   }
 
-  const isLookingGlass = state.xr.mode === 'looking-glass';
-  const autoZ = isLookingGlass ? lookingGlassAutoTranslationZ() : state.autoTranslationZ;
-  const autoY = isLookingGlass ? lookingGlassAutoTranslationY() : 0;
+  const autoZ = state.xr.mode === 'looking-glass'
+    ? lookingGlassAutoTranslationZ()
+    : state.autoTranslationZ;
   const model = state.render.modelMatrix;
   const translateZ = state.controls.translationZ + autoZ;
   mat4.identityInto(model);
-  mat4.translateInPlace(model, [
-    state.controls.translationX,
-    state.controls.translationY + autoY,
-    translateZ,
-  ]);
+  mat4.translateInPlace(model, [state.controls.translationX, state.controls.translationY, translateZ]);
   mat4.translateInPlace(model, [0, 0, state.pivotZ]);
   mat4.rotateYInPlace(model, state.controls.rotationY);
   mat4.rotateXInPlace(model, state.controls.rotationX);

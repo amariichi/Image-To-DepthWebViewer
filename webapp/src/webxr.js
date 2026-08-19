@@ -218,12 +218,19 @@ export class WebXRManager {
           if (!LookingGlassWebXRPolyfill) {
             throw new Error('Looking Glass module missing polyfill export');
           }
-          const merged = { ...(LookingGlassConfig || {}), ...config };
-          // Kept so the model can be placed relative to the hologram volume
-          // rather than against a hard-coded distance.
+          // `LookingGlassConfig` is a live singleton whose setters drive the
+          // renderer. Spreading it into a plain object drops those setters, so
+          // the previous code passed a lifeless copy and nothing in it took
+          // effect. The vendor's documented sequence is to assign onto the
+          // singleton and then construct the polyfill.
           this.lookingGlassConfig = LookingGlassConfig || null;
+          if (LookingGlassConfig) {
+            for (const [key, value] of Object.entries(config)) {
+              if (value !== undefined && value !== null) LookingGlassConfig[key] = value;
+            }
+          }
           // Instantiate polyfill once. Subsequent calls reuse existing session.
-          new LookingGlassWebXRPolyfill(merged);
+          new LookingGlassWebXRPolyfill();
           this.polyfillActive = true;
           this.xr = navigator.xr || this.xr;
           return true;
