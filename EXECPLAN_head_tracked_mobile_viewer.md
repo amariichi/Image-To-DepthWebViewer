@@ -41,8 +41,13 @@ The feature is successful when a user loads or generates an RGBDE scene at `http
 - [x] (2026-08-19) Restored uniform pinch scaling and bounded relief thickness at a quarter of the viewer's real eye distance instead of freezing depth.
 - [x] (2026-08-19) Added `?debug=1` sliders for viewing distance, relief span, and disparity blend so the remaining perceptual choices can be settled on the device itself.
 - [x] (2026-08-19) Ran 71 JavaScript tests, 16 Python tests, syntax checks over 22 JavaScript files, and ESLint; all passed.
-- [ ] Reduce mobile transfer and peak memory: publish the texture as JPEG, decode it with `createImageBitmap`, raise the vertex ceiling to the desktop grid with 32-bit indices, and add a real high/low fallback for constrained devices.
-- [ ] Verify the fourth-pass behavior on the user's real iPhone 17 and iPad mini: iPhone Chrome direction is natural, Safari motion is approximately half the original amplitude, the newly republished optimized scene loads in iPad Chrome, pinch magnifies without producing crescent-shaped foreground distortion, and a near subject in a deep outdoor scene now has visible relief.
+- [x] (2026-08-19) Reduced mobile transfer and peak memory at the consumer that dominates it. The texture is published as JPEG rather than lossless PNG, decoded with `createImageBitmap`, and released as soon as it reaches the GPU. The vertex ceiling rose from `65,535` to `262,144` with 32-bit indices, which WebGL2 draws without an extension. The multisampled backbuffer is capped at 2.6 million pixels.
+- [x] (2026-08-19) Added a genuine high/low fallback. `Publish to Mobile` now uploads a reduced build alongside the full one, the relay serves it at `?variant=reduced` with its own ETag, and the viewer requests it only after the full build has actually failed to load, because no browser API on iOS reports available memory in advance.
+- [x] (2026-08-19) Moved the debug tuning sliders and live readings clear of the startup copy so both remain usable on a phone-sized viewport.
+- [x] (2026-08-19) Verified the whole path in a browser against the live relay: `rgbde-large.png` loaded in the desktop editor, `Publish to Mobile` produced a 249,750-vertex, 10.5 MB full build plus a 2.0 MB reduced build, and the manifest carried `depthSpan 1`, `disparityBlend 1`, `baselineEyeZ 4.5`, and `captureFovDeg 32`. The viewer reached `Scene ready` with WebGL error 0, parsed 32-bit indices and an `image/jpeg` texture, and produced a relief spanning exactly `z` in `[-1, 0]`. The device table resolved iPhone 17 to `0.16565` and iPad mini to `0.15583` millimetres per CSS pixel. Injecting a simulated out-of-memory failure on the full build made the viewer fall back and report `Scene ready (reduced build)`.
+- [x] (2026-08-19) Confirmed the desktop editor is unchanged: `Generate Depth`, `Save RGBDE`, `Save glTF`, `Publish to Mobile`, and the VR and Looking Glass entry controls are all present, mono and side-by-side switching both report WebGL error 0, and the only console errors are the unrelated port-8000 depth backend and `favicon.ico`.
+- [x] (2026-08-19) Ran 76 JavaScript tests, 17 Python tests, syntax checks over 22 JavaScript files, ESLint, and `git diff --check`; all passed.
+- [ ] Settle the three remaining perceptual variables on the user's real iPhone 17 and iPad mini using the `?debug=1` sliders, then fold the chosen values into the defaults. Verify the fourth-pass behavior: iPhone Chrome direction is natural, Safari motion is approximately half the original amplitude, the newly republished optimized scene loads in iPad Chrome, pinch magnifies without producing crescent-shaped foreground distortion, and a near subject in a deep outdoor scene now has visible relief.
 
 ## Surprises & Discoveries
 
@@ -206,6 +211,25 @@ Milestones through head tracking, touch interaction, browser-specific handedness
 The final outcome still requires another real-device check because camera delivery, comfortable gain, and iOS browser memory remain device-dependent properties. The debug URL `/viewer.html?debug=1` displays eye coordinates, the active horizontal flip and XY gain, camera dimensions, render rate, inference rate, and first-pose latency. Loading now reports download, GLB parse, and texture decode as separate stages. The user must reload the PC editor and republish once more because only a newly published scene receives the mobile grid/texture budgets.
 
 Milestones 4–9 are complete in code. The physical-audit red phase failed at the old Z gain/span expectations and the missing image-plane-only interaction transform; after implementation, 24 focused tests passed. The final regression result is 56 JavaScript tests and 15 Python tests passing, with 21 JavaScript files passing syntax checks, ESLint returning zero, and `git diff --check` clean. Browser smoke checks found no page errors at `/` or `/viewer.html`; Desktop 2D/SBS switching and the VR/Looking Glass entry controls remained intact. The actual app path loaded an RGBDE fixture, published a 65,490-vertex compact GLB with `depthSpan: 0.125`, and an iPad-sized viewport picked up revision 8 with `Scene ready` and WebGL error 0. WebXR and Looking Glass hardware were unavailable, so their unchanged entry and isolated rendering paths were verified rather than a hardware session.
+
+The fourth pass replaced a set of compensating errors with measured quantities. Physical screen size now drives the eye distance, which had been about half the real holding distance; the metric head pose replaces the tuned gains that had been shrunk to hide that error; and depth is allocated by disparity rather than linearly in distance, which is what lets a near subject keep usable relief in a scene whose far field is thousands of times more distant. The relief span rose eightfold as a result, and pinch scales the miniature uniformly again within a bound tied to the viewer's real distance. Three variables remain genuinely perceptual — how far the device is actually held, how thick the miniature should be, and how much of the depth budget the near subject should take — and all three are exposed as `?debug=1` sliders so they can be settled by looking at the result rather than by argument.
+
+Two earlier proposals were withdrawn on explicit user direction and are recorded here so they are not reintroduced. Triangles that straddle a depth discontinuity must not be culled: the stretched textured triangle is the wanted hole filler, because a smeared surface is a more plausible reconstruction of hidden geometry than a black hole. The model must not rotate toward the viewer: it stays square-on to the glass, and only the vanishing point follows the eye, which the existing off-axis projection already provides.
+
+The validation transcript for the fourth pass was:
+
+    npm test:                     76 passed, 0 failed
+    Python unittest discovery:    17 passed, 0 failed
+    npm run check:js:             22 files checked
+    npm run lint:                 exit 0
+    git diff --check:             exit 0
+    browser errors at /:          only the unstarted port-8000 backend and favicon.ico
+    browser errors at viewer:     none
+    optimized publish:            249,750 vertices, 10.5 MB full, 2.0 MB reduced
+    published manifest:           depthSpan 1, disparityBlend 1, baselineEyeZ 4.5, captureFovDeg 32
+    mobile scene state:           ready, WebGL error 0, image/jpeg texture, Uint32 indices
+    relief depth bounds:          z in [-1, 0]
+    simulated full-build failure: fell back and reported "Scene ready (reduced build)"
 
 ## Context and Orientation
 

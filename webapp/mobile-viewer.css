@@ -77,8 +77,13 @@ button {
   position: absolute;
   z-index: 6;
   right: max(28px, calc(env(safe-area-inset-right) + 14px));
-  bottom: 54px;
+  /* The tuning sliders own the bottom of the stage, so the live readings sit
+     at the top where the introductory copy used to be. */
+  top: 84px;
+  bottom: auto;
+  max-width: min(60vw, 420px);
   display: block;
+  text-align: right;
   margin: 0;
   color: var(--signal);
   white-space: pre-line;
@@ -368,6 +373,21 @@ body[data-state="tracking-error"] .startup-panel .intro {
 @keyframes reveal {
   from { opacity: 0; transform: translateY(12px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* Debug mode exists to settle viewing distance, relief depth, and depth
+   allocation on a real device. The introductory copy would otherwise sit
+   underneath the sliders, so it steps aside while tuning. */
+.debug-tracking .index,
+.debug-tracking .startup-panel h1,
+.debug-tracking .intro,
+.debug-tracking .gesture-hint {
+  display: none;
+}
+
+.debug-tracking .startup-panel {
+  top: 84px;
+  transform: none;
 }
 
 .debug-controls {
