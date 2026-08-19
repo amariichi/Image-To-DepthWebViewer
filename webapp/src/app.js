@@ -537,7 +537,16 @@ async function createCurrentGlb({
   }
   const baseName = getExportBaseName();
   const textureFileName = `${baseName || 'depth_export'}.png`;
-  const deformedPositions = createDeformedPositions(state.mesh, state.options);
+  // Depth Magnification linearly scales the depth range, and the mobile
+  // manifest already carries that intent as its relief span. Applying it to the
+  // published geometry as well would count it twice, and the second count is
+  // not neutral: squeezing the source range toward the near plane also shifts
+  // the mobile disparity mapping, so the subject ends up with a smaller share
+  // of a smaller budget. Far clipping and any log shaping still apply.
+  const exportOptions = mobileOptimized
+    ? { ...state.options, magnification: 1 }
+    : state.options;
+  const deformedPositions = createDeformedPositions(state.mesh, exportOptions);
   const mesh = mobileOptimized
     ? createMobilePublishMesh(
       { ...state.mesh, positions: deformedPositions },

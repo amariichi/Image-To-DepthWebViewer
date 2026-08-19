@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createGlbBlob } from '../webapp/src/gltf-exporter.js';
+import { createDeformedPositions } from '../webapp/src/mesh-evaluator.js';
+import { normalizeReliefDepth } from '../webapp/src/mobile-relief.js';
 import {
   MAX_MOBILE_PUBLISH_VERTICES,
   MOBILE_PUBLISH_PROFILES,
@@ -115,4 +117,33 @@ test('standard desktop GLB keeps normals and 32-bit indices by default', async (
   const primitive = json.meshes[0].primitives[0];
   assert.equal('NORMAL' in primitive.attributes, true);
   assert.equal(json.accessors[primitive.indices].componentType, 5125);
+});
+
+
+test('depth magnification is carried by the relief span, not applied twice', () => {
+  // The manifest already expresses Depth Magnification as the mobile relief
+  // span. Applying it to the published geometry as well counts it twice, and
+  // the second count is not neutral: squeezing the source range toward the near
+  // plane shifts the disparity mapping, so a near subject ends up with a
+  // smaller share of a smaller budget.
+  const mesh = {
+    baseDepthMin: 1,
+    baseDepths: new Float32Array([1.0, 1.3, 3.0]),
+    rayDirections: new Float32Array([0, 0, -1, 0, 0, -1, 0, 0, -1]),
+    positions: new Float32Array(9),
+  };
+  const magnified = createDeformedPositions(mesh, { magnification: 0.5 });
+  const plain = createDeformedPositions(mesh, { magnification: 1 });
+
+  // Magnification 0.5 halves the published depth range.
+  assert.ok(Math.abs(-magnified[8] - 2.0) < 1e-6, `far sample landed at ${-magnified[8]}`);
+  assert.ok(Math.abs(-plain[8] - 3.0) < 1e-6, `far sample landed at ${-plain[8]}`);
+
+  // The subject's share of the relief budget is what that costs.
+  const magnifiedShare = normalizeReliefDepth(-magnified[5], { near: -magnified[2], far: -magnified[8] }, 1);
+  const plainShare = normalizeReliefDepth(-plain[5], { near: -plain[2], far: -plain[8] }, 1);
+  assert.ok(
+    plainShare > magnifiedShare * 1.25,
+    `expected the unsqueezed range to give the subject more: ${magnifiedShare} vs ${plainShare}`,
+  );
 });
