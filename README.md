@@ -82,6 +82,8 @@ Publishing also uploads a smaller fallback build alongside the full one. No brow
 
 The viewer does not request device orientation. Screen rotation cancels any active touch contacts, rebuilds the relief for the new aspect ratio, and requests recentering while preserving the accumulated touch pose.
 
+Looking Glass framing is the display's own business rather than the model's: the polyfill frames a volume of `targetDiam` around `targetX/Y/Z` and renders it with `fovy`, so moving the model only shifts it inside a frame that is already fixed. Those five values can be set on the editor URL, for example `?lgTargetY=0.92&lgTargetDiam=0.9`, and the live values are reported when a session starts. The library looks at 1.6 above the floor by default, which leaves a model sitting near the origin low in frame, so the default here is 0; `targetZ` defaults to -0.575, measured on a Looking Glass Go. The height and size are scene-dependent — two pictures settled at 0.11 and 0.92, and at 2.00 and 0.90 — so they are yours to set rather than derived.
+
 The port-5173 relay keeps only the latest published scene in memory. Restarting the frontend clears it; press **Publish to Mobile** again. Publishing a new scene replaces the current revision and open viewers pick it up automatically.
 
 ### WebXR / XR playback
@@ -190,6 +192,8 @@ off-axis 投影は左右の目の中点にある仮想的な単眼（cyclopean e
 Publish 時には縮小版のフォールバックも同時にアップロードします。iOS のブラウザには利用可能メモリを返す API が存在せず、端末が耐えられるかを事前に予測できないためです。ビューアはまず完全版を読み込み、それが実際に失敗した場合にだけ縮小版を要求し、その際は `Scene ready (reduced build)` と表示します。
 
 DeviceOrientation は要求しません。画面回転時は進行中のタッチ接触を解除し、新しい縦横比に合わせて relief を組み直し、積み上げたタッチ姿勢を保ったまま Recenter を行います。
+
+Looking Glass のフレーミングはモデル側ではなくディスプレイ側の管轄です。polyfill は `targetX/Y/Z` を中心に `targetDiam` の体積を `fovy` で切り取るため、モデルを動かしても既に固定されたフレームの中で動くだけです。この5つの値はエディタの URL で指定でき（例: `?lgTargetY=0.92&lgTargetDiam=0.9`）、セッション開始時に現在値が表示されます。ライブラリの既定は床から 1.6 の高さを見るため、原点付近に置かれたモデルは低く映ります。そのため既定値は 0 とし、`targetZ` は Looking Glass Go での実測値 −0.575 にしています。高さと大きさはシーン依存で（2枚の画像でそれぞれ 0.11 と 0.92、2.00 と 0.90）、導出せず利用者が指定します。
 
 ポート 5173 の relay が保持するのは最新の1シーンだけで、メモリ内保存です。フロントエンドを再起動した場合は **Publish to Mobile** を再度押してください。別シーンを Publish すると revision が置き換わり、開いているモバイルビューアも自動更新します。
 

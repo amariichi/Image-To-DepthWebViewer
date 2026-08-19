@@ -180,10 +180,22 @@ export class WebXRManager {
     return this.lookModulePromise;
   }
 
+  // Framing must be reapplied on every entry, not only when the polyfill is
+  // first constructed: the polyfill is instantiated once, so a second scene
+  // would otherwise keep the first one's frame.
+  applyLookingGlassConfig(config = {}) {
+    const target = this.lookingGlassConfig;
+    if (!target) return;
+    for (const [key, value] of Object.entries(config)) {
+      if (Number.isFinite(value)) target[key] = value;
+    }
+  }
+
   async enterLookingGlass(config = {}) {
     this.isLookingGlass = true;
     try {
-      await this.ensureLookingGlassPolyfill(config);
+      await this.ensureLookingGlassPolyfill();
+      this.applyLookingGlassConfig(config);
     } catch (error) {
       console.error('Looking Glass polyfill failed', error);
       this.onStatus(`Looking Glass setup failed: ${error.message || error}`);
@@ -208,7 +220,7 @@ export class WebXRManager {
     return this.enterVR(sessionOptions);
   }
 
-  async ensureLookingGlassPolyfill(config) {
+  async ensureLookingGlassPolyfill() {
     if (!this.lookPromise) {
       // Resolving the module first keeps the instantiation below synchronous,
       // so the caller's user activation survives into requestSession.
@@ -224,11 +236,6 @@ export class WebXRManager {
           // effect. The vendor's documented sequence is to assign onto the
           // singleton and then construct the polyfill.
           this.lookingGlassConfig = LookingGlassConfig || null;
-          if (LookingGlassConfig) {
-            for (const [key, value] of Object.entries(config)) {
-              if (value !== undefined && value !== null) LookingGlassConfig[key] = value;
-            }
-          }
           // Instantiate polyfill once. Subsequent calls reuse existing session.
           new LookingGlassWebXRPolyfill();
           this.polyfillActive = true;

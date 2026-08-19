@@ -85,7 +85,33 @@ const DESIRED_NEAR = -2.0;
 // into it, which is where a depth relief belongs: nothing pops out past the
 // frame, where a Looking Glass clips it. Anchoring on the focal plane itself
 // overshot by roughly half the volume on a real device.
-const DEFAULT_LOOKING_GLASS_TARGET_DIAM = 3;
+// Where the model's nearest surface sits in the Looking Glass reference space.
+// The monitor path uses DESIRED_NEAR, which left the model behind the hologram
+// volume and had to be dragged forward by hand every session. Anchoring 2.0
+// forward of that overshot by a reported 1.3 to 1.5, which puts the wanted
+// position half a unit forward, and that is this value. It is deliberately not
+// derived from `targetDiam`: that is a framing control the viewer adjusts per
+// scene, and it must not silently move the model in depth as well. The Z Offset
+// slider still applies on top.
+const LOOKING_GLASS_MODEL_FRONT_Z = -1.5;
+// Where the hologram volume sits in depth is a property of the display, not of
+// the picture: two very different scenes were both settled at about -0.575 on a
+// Looking Glass Go. Its height and size are not, because a perspective mesh is
+// `rayDirection * depth`, so a scene with distant sky at the top spreads far
+// wider above the axis than below it. Those two are therefore derived from the
+// model's own bounds rather than fixed.
+const LOOKING_GLASS_TARGET_Z = -0.575;
+// The library assumes a standing viewer and looks at 1.6 above the floor, which
+// leaves a model sitting near the origin low in the frame. Two very different
+// scenes were settled at 0.11 and 0.92 on a Looking Glass Go, so the right value
+// is per-scene; zero is simply a far better starting point than 1.6.
+//
+// No formula is offered for it, or for `targetDiam`. Deriving them from the
+// model's bounds was tried and disagreed with both measurements in magnitude
+// and sign, because the bounding box of a perspective reconstruction is
+// dominated by its far cone rather than by the subject -- the same reason the
+// mobile relief fits on UVs instead of on XYZ bounds.
+const LOOKING_GLASS_TARGET_Y = 0;
 const MAG_MIN = 0.1;
 const MAG_MAX = 100;
 const MAG_DEFAULT = 0.5;
@@ -1666,7 +1692,7 @@ function setupXR() {
         invalidateModelMatrix();
         if (state.xr.mode === 'looking-glass') {
           showStatus(
-            `Looking Glass: model front at z ${lookingGlassVolumeFrontZ().toFixed(2)}; frame ${describeLookingGlassFrame()}`,
+            `Looking Glass: model front at z ${LOOKING_GLASS_MODEL_FRONT_Z.toFixed(2)}; frame ${describeLookingGlassFrame()}`,
             5000,
           );
         }
@@ -1806,7 +1832,17 @@ function lookingGlassConfigFromUrl() {
 
 async function handleEnterLookingGlass() {
   if (!xrManager) return;
-  const overrides = lookingGlassConfigFromUrl();
+  // Only the depth of the hologram volume generalises across scenes; two very
+  // different pictures settled within 0.03 of each other on a Looking Glass Go.
+  // Its height and size did not, varying by a factor of two and more, and an
+  // attempt to derive them from the model's bounds disagreed with the measured
+  // values in both magnitude and sign. They are left to the URL rather than
+  // guessed at.
+  const overrides = {
+    targetY: LOOKING_GLASS_TARGET_Y,
+    targetZ: LOOKING_GLASS_TARGET_Z,
+    ...lookingGlassConfigFromUrl(),
+  };
   const success = await xrManager.enterLookingGlass(overrides);
   if (!success) {
     showStatus('Looking Glass session could not start.', 4000);
@@ -1884,17 +1920,6 @@ function updateMirrorVisibility() {
   }
 }
 
-function lookingGlassTargetDiam() {
-  const diameter = Number(xrManager?.lookingGlassConfig?.targetDiam);
-  return Number.isFinite(diameter) && diameter > 0
-    ? diameter
-    : DEFAULT_LOOKING_GLASS_TARGET_DIAM;
-}
-
-function lookingGlassVolumeFrontZ() {
-  return -lookingGlassTargetDiam() / 2;
-}
-
 function describeLookingGlassFrame() {
   const config = xrManager?.lookingGlassConfig;
   if (!config) return 'targetDiam 3 (defaults)';
@@ -1908,18 +1933,11 @@ function describeLookingGlassFrame() {
 function lookingGlassAutoTranslationZ() {
   const info = state.displayBounds;
   if (!info) return state.autoTranslationZ;
-  return clamp(lookingGlassVolumeFrontZ() - info.maxZ, -20, 20);
+  return clamp(LOOKING_GLASS_MODEL_FRONT_Z - info.maxZ, -20, 20);
 }
 
-function computeModelMatrix() {
-  if (!state.render.modelMatrixDirty) {
-    return state.render.modelMatrix;
-  }
-
-  const autoZ = state.xr.mode === 'looking-glass'
-    ? lookingGlassAutoTranslationZ()
-    : state.autoTranslationZ;
-  const model = state.render.modelMatrix;
+function buildModelMatrix(autoZ, into = mat4.identity()) {
+  const model = into;
   const translateZ = state.controls.translationZ + autoZ;
   mat4.identityInto(model);
   mat4.translateInPlace(model, [state.controls.translationX, state.controls.translationY, translateZ]);
@@ -1928,8 +1946,19 @@ function computeModelMatrix() {
   mat4.rotateXInPlace(model, state.controls.rotationX);
   mat4.scaleInPlace(model, state.controls.scale);
   mat4.translateInPlace(model, [0, 0, -state.pivotZ]);
-  state.render.modelMatrixDirty = false;
   return model;
+}
+
+function computeModelMatrix() {
+  if (!state.render.modelMatrixDirty) {
+    return state.render.modelMatrix;
+  }
+  const autoZ = state.xr.mode === 'looking-glass'
+    ? lookingGlassAutoTranslationZ()
+    : state.autoTranslationZ;
+  buildModelMatrix(autoZ, state.render.modelMatrix);
+  state.render.modelMatrixDirty = false;
+  return state.render.modelMatrix;
 }
 
 function renderScene() {
