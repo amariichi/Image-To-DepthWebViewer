@@ -215,6 +215,9 @@ test('tracker metrics expose actual camera size and time to first stable pose', 
     cameraHeight: 720,
     metricAvailable: false,
     headDistanceMm: 0,
+    rawHeadXMm: 0,
+    calibratedHeadXMm: 0,
+    poseSource: 'none',
     inferenceCount: 0,
     inferenceHz: 0,
     inferenceDurationMs: 0,
@@ -340,4 +343,42 @@ test('a measured eye distance survives the projection instead of being clamped',
   // The ceiling still exists; it just clears the real measurement range.
   const absurd = sanitizeEye({ x: 0, y: 0, z: 500 });
   assert.equal(absurd.z, MAX_SUPPORTED_EYE_Z);
+});
+
+
+test('a calibration without a metric pose never drives the metric path', () => {
+  // MediaPipe can return landmarks a frame or two before it returns the
+  // transformation matrix. A calibration averaged over those frames has no
+  // metric centre, and using it would put the zero point on the camera axis
+  // rather than on the viewer, shifting every later pose sideways by however
+  // far off-axis they were sitting.
+  const tracker = new HeadTracker({
+    video: { videoWidth: 640, videoHeight: 480 },
+    worldUnitMm: 65,
+    mediaDevices: { getUserMedia: async () => ({ getTracks: () => [] }) },
+    schedule: () => 1,
+    cancelSchedule: () => {},
+  });
+  tracker.worldUnitMm = 65;
+
+  tracker.calibration = { center: { x: 0, y: 0 }, eyeDistance: 60, baselineEyeZ: 4.6, metric: null };
+  tracker.metrics.metricAvailable = true;
+  assert.equal(tracker.usesMetricPose(), false, 'a metric-less calibration must not be used');
+
+  tracker.calibration = {
+    center: { x: 0, y: 0 },
+    eyeDistance: 60,
+    baselineEyeZ: 4.6,
+    metric: { xMm: -30, yMm: 0, distanceMm: 300 },
+  };
+  assert.equal(tracker.usesMetricPose(), true);
+
+  // With a proper metric centre, sitting still at the calibration pose reports
+  // zero rather than the viewer's offset from the camera axis.
+  const still = mapMetricPoseToEyePose(
+    { xMm: -30, yMm: 0, distanceMm: 300 },
+    tracker.calibration,
+    { worldUnitMm: 65 },
+  );
+  assert.ok(Math.abs(still.x) < 1e-9);
 });

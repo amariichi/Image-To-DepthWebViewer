@@ -384,6 +384,9 @@ export class HeadTracker {
       inferenceTimestamps: [],
       metricAvailable: false,
       headDistanceMm: 0,
+      rawHeadXMm: 0,
+      calibratedHeadXMm: 0,
+      poseSource: 'none',
     };
   }
 
@@ -398,6 +401,9 @@ export class HeadTracker {
       inferenceDurationMs: this.metrics.inferenceDurationMs,
       metricAvailable: this.metrics.metricAvailable,
       headDistanceMm: this.metrics.headDistanceMm,
+      rawHeadXMm: this.metrics.rawHeadXMm,
+      calibratedHeadXMm: this.metrics.calibratedHeadXMm,
+      poseSource: this.metrics.poseSource,
     };
   }
 
@@ -407,7 +413,13 @@ export class HeadTracker {
   }
 
   usesMetricPose() {
-    return Boolean(this.worldUnitMm && this.metrics.metricAvailable);
+    // The metric path measures head movement from the calibration pose, so it
+    // must not run against a calibration that has no metric pose of its own.
+    // MediaPipe can return landmarks a frame or two before it returns the
+    // transformation matrix; a calibration averaged over those frames would
+    // leave the centre at the camera axis instead of at the viewer, shifting
+    // every later pose sideways by however far off-axis they were sitting.
+    return Boolean(this.worldUnitMm && this.calibration?.metric);
   }
 
   emitStatus(code, message) {
@@ -505,11 +517,18 @@ export class HeadTracker {
       observation.metric = metric;
       this.metrics.metricAvailable = true;
       this.metrics.headDistanceMm = metric.distanceMm;
+      this.metrics.rawHeadXMm = metric.xMm;
+      this.metrics.calibratedHeadXMm = metric.xMm - (Number(this.calibration?.metric?.xMm) || 0);
     }
     this.lostSince = null;
 
     if (!this.calibration) {
-      this.calibrationSamples.push(observation);
+      // Once the device is known to deliver metric poses, only samples carrying
+      // one may calibrate, so the calibration and the live poses always come
+      // from the same measurement.
+      if (!this.metrics.metricAvailable || observation.metric) {
+        this.calibrationSamples.push(observation);
+      }
       this.calibrationSamples = this.calibrationSamples.slice(-CALIBRATION_SAMPLE_COUNT);
       this.emitStatus('calibrating', 'Hold still for calibration…');
       if (!observationsAreStable(this.calibrationSamples)) return;
@@ -521,7 +540,7 @@ export class HeadTracker {
         // In metric mode the calibration pose already carries a real measured
         // distance, so the neutral view starts from where the viewer actually
         // is rather than from an assumed holding distance.
-        z: this.usesMetricPose() && average.metric
+        z: this.worldUnitMm && average.metric
           ? mapMetricPoseToEyePose(average.metric, this.calibration, {
             worldUnitMm: this.worldUnitMm,
             mirrorX: this.mirrorX,
@@ -539,6 +558,7 @@ export class HeadTracker {
       return;
     }
 
+    this.metrics.poseSource = this.usesMetricPose() && observation.metric ? 'metric' : 'landmark';
     const pose = this.usesMetricPose() && observation.metric
       ? mapMetricPoseToEyePose(observation.metric, this.calibration, {
         worldUnitMm: this.worldUnitMm,

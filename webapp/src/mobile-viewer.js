@@ -55,8 +55,17 @@ const debugBlendInput = document.getElementById('debug-blend');
 const debugBlendValue = document.getElementById('debug-blend-value');
 const debugAnchorInput = document.getElementById('debug-anchor');
 const debugRefitInput = document.getElementById('debug-refit');
-const debugTracking = new URLSearchParams(window.location.search).has('debug');
-let trackingMirrorX = loadFrontCameraMirrorX(window.localStorage, navigator.userAgent);
+const viewerParams = new URLSearchParams(window.location.search);
+const debugTracking = viewerParams.has('debug');
+// A URL override for the horizontal direction. Stored settings do not survive
+// clearing site data, which makes an intermittent handedness problem very hard
+// to pin down; `?flip=0` or `?flip=1` pins it for a session regardless.
+const flipOverride = viewerParams.has('flip')
+  ? viewerParams.get('flip') !== '0'
+  : null;
+let trackingMirrorX = flipOverride === null
+  ? loadFrontCameraMirrorX(window.localStorage, navigator.userAgent)
+  : flipOverride;
 const trackingXyGain = inferFrontCameraXyGain(navigator.userAgent);
 
 // Physical screen size is what turns the virtual screen's world units into real
@@ -161,7 +170,7 @@ function updateDebugReadout() {
     `render ${renderRate.rate().toFixed(1)} fps  inference ${metrics.inferenceHz.toFixed(1)} Hz / ${metrics.inferenceDurationMs.toFixed(1)} ms`,
     `camera ${metrics.cameraWidth || '—'}×${metrics.cameraHeight || '—'}  first pose ${firstPose}`,
     `viewport ${state.orientation}  ${window.innerWidth}×${window.innerHeight}`,
-    `horizontal camera flip ${trackingMirrorX ? 'on' : 'off'}  ${metrics.metricAvailable ? 'metric head pose' : `ratio fallback gain ${trackingXyGain.toFixed(3)}`}`,
+    `flip ${trackingMirrorX ? 'on' : 'off'}${flipOverride === null ? '' : ' (from URL)'}  source ${metrics.poseSource}  raw head x ${metrics.rawHeadXMm.toFixed(0)} mm  vs calibration ${metrics.calibratedHeadXMm.toFixed(0)} mm`,
     `screen ${screenMetrics.label} (${screenMetrics.source})  ${(state.geometry?.screenHeightMm ?? 0).toFixed(0)} mm tall  1 unit ${(state.geometry?.worldUnitMm ?? 0).toFixed(1)} mm`,
     `viewing ${viewingDistanceMm.toFixed(0)} mm  eyeZ ${(state.geometry?.baselineEyeZ ?? 0).toFixed(2)}  fov ${(state.geometry?.verticalFovDeg ?? 0).toFixed(1)}°  head ${metrics.headDistanceMm ? `${metrics.headDistanceMm.toFixed(0)} mm` : '—'}`,
     `depth span ${state.depthSpan.toFixed(2)}  cone splay ${coneSplay.toFixed(2)}x  disparity blend ${state.disparityBlend.toFixed(2)}  uniform-scale span ${uniformSpan === null ? '—' : uniformSpan.toFixed(1)}`,
