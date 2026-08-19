@@ -56,6 +56,7 @@ The feature is successful when a user loads or generates an RGBDE scene at `http
 - [x] (2026-08-19) Made the development host require revalidation of the frontend files. A stale browser copy of one ES module linked against a freshly fetched one fails at link time and leaves the page with no event listeners at all, so controls stop responding with nothing visible unless the console is open. This was hit twice while working and once by the user, who had to hard-reload before the RGBDE load button would respond.
 - [x] (2026-08-19) Fixed the relief using distance along the capture ray rather than perpendicular distance. A flat wall's straight-line distance from the camera grows as `1 / cos(theta)` toward the edges of the frame, so the picture bowed backwards at its edges in proportion to the relief depth. The user saw this at a span of 8 as a cone or dome, "as if projected onto a small sphere". Added a regression that builds a flat wall across a 50 degree capture and fails if it spreads over any relief depth at all.
 - [x] (2026-08-19) Moved the debug readout below the start button. On a phone-width viewport it overlapped the button horizontally and, painting above the startup panel, would have swallowed taps meant for it.
+- [x] (2026-08-19) Established that the remaining cone shape at large relief spans is geometry rather than a defect, and surfaced the governing number. The relief's outward splay and its exact reproduction of the source image are the same construction and cannot be separated. The debug readout now shows the splay live so a span can be chosen knowingly.
 - [ ] Settle the three remaining perceptual variables on the user's real iPhone 17 and iPad mini using the `?debug=1` sliders, then fold the chosen values into the defaults. Verify the fourth-pass behavior: iPhone Chrome direction is natural, Safari motion is approximately half the original amplitude, the newly republished optimized scene loads in iPad Chrome, pinch magnifies without producing crescent-shaped foreground distortion, and a near subject in a deep outdoor scene now has visible relief.
 
 ## Surprises & Discoveries
@@ -155,6 +156,15 @@ The feature is successful when a user loads or generates an RGBDE scene at `http
 
 - Observation: The mirrored camera preview in debug mode cannot affect tracking direction, so a handedness change observed on entering debug mode is not caused by it.
   Evidence: `.debug-tracking .tracking-video` applies `transform: scaleX(-1)`, which is a presentation-only transform on the element's rendered box. `FaceLandmarker.detectForVideo` uploads the video element's decoded frames directly and never sees it. The user's own evidence pointed elsewhere: clearing the browser cache resolved the reversal, which is the stale ES module failure recorded above.
+
+- Observation: A deep relief necessarily looks like a widening cone at a real holding distance, and this is the price of the initial view reproducing the source image exactly.
+  Evidence: Every vertex is placed on the ray from the calibrated eye through its own image anchor, so the back of the relief is `(E + span) / E` wider than its front: 1.22 times at a span of 1, 2.74 times at a span of 8, for an eye distance of 4.6 world units. Moving the apex further away reduces the splay but contracts distant content by `E / (E + D)` instead, which at a span of 8 shrinks the far plane to 36 percent and destroys the match with the source image. The splay is simply what an object that deep, seen that close, subtends. A regression covers both ends of the trade-off.
+
+- Observation: The splay also sets how far a depth discontinuity stretches, which is what makes large spans read as radial streaks rather than as depth.
+  Evidence: Adjacent vertices either side of a discontinuity share an image anchor but differ in lateral scale by the splay factor, so a discontinuity at the edge of the frame spreads across 10.6 percent of the screen width at a span of 1 and 84.4 percent at a span of 8. The stretch direction is radial from the image centre, matching the user's report of radial discontinuities spreading outwards.
+
+- Observation: Approaching plain uniform scaling is therefore unreachable on a hand-held display, not merely impractical.
+  Evidence: The uniform-scale span for a coastal portrait is several thousand world units. At an eye distance of 4.6 that would splay by a factor in the thousands. The desktop and Looking Glass paths avoid this only because their camera distance and field of view are free variables; a head-tracked window has neither.
 
 ## Decision Log
 

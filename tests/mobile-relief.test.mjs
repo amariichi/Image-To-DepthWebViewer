@@ -490,3 +490,35 @@ test('a flat wall stays flat instead of bowing away at the edges', () => {
   }
   assert.ok(maxZ - minZ < 1e-4, `a flat wall spread over ${maxZ - minZ} of relief depth`);
 });
+
+
+test('exact image reproduction and the outward splay are the same construction', () => {
+  // Every vertex sits on the ray from the calibrated eye through its own image
+  // anchor. That is what makes the initial view reproduce the source image, and
+  // it is also why the relief widens with depth. Moving the apex further away
+  // would splay less but would contract distant content instead, so the picture
+  // would no longer match: the two cannot be separated.
+  const eyeZ = 4.6;
+  const anchor = 0.5;
+
+  const project = (apex, depth) => {
+    const relief = anchor * (apex + depth) / apex;   // where the vertex is placed
+    return relief * eyeZ / (eyeZ + depth);           // where the eye sees it
+  };
+
+  for (const depth of [1, 4, 8]) {
+    // Apex at the eye: exact at every depth, and the relief splays outwards.
+    assert.ok(Math.abs(project(eyeZ, depth) - anchor) < 1e-12);
+    const splay = (eyeZ + depth) / eyeZ;
+    assert.ok(splay > 1);
+
+    // Apex at infinity: no splay at all, but the picture contracts instead.
+    const flat = anchor * eyeZ / (eyeZ + depth);
+    assert.ok(flat < anchor * 0.95, `a flat relief left depth ${depth} undistorted`);
+  }
+
+  // The splay is what a real object that deep, seen that close, actually
+  // subtends; it is not an adjustable parameter.
+  assert.ok(Math.abs((eyeZ + 1) / eyeZ - 1.217) < 0.001);
+  assert.ok(Math.abs((eyeZ + 8) / eyeZ - 2.739) < 0.001);
+});

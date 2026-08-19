@@ -133,6 +133,15 @@ function updateDebugReadout() {
   // uniform scale, which is how the desktop and Looking Glass paths present the
   // same mesh. Comparing the two numbers shows how much this scene is being
   // compressed to keep it a miniature just behind the glass.
+  // How much wider the back of the relief is than its front. Every vertex sits
+  // on the ray from the calibrated eye through its own image anchor, which is
+  // what makes the initial view reproduce the source image exactly -- and the
+  // same construction necessarily splays the relief outwards with depth. The
+  // two cannot be separated: an apex further away would splay less but would
+  // contract distant content instead, so the picture would no longer match.
+  // Past roughly 1.5 the splay turns each depth discontinuity into a long
+  // radial streak.
+  const coneSplay = (currentBaselineEyeZ() + state.depthSpan) / currentBaselineEyeZ();
   const uniformSpan = state.scene ? estimateUniformScaleDepthSpan({
     sourceDepth: state.scene.sourceDepth,
     imageRectHeight: state.scene.imageRect?.height,
@@ -155,7 +164,7 @@ function updateDebugReadout() {
     `horizontal camera flip ${trackingMirrorX ? 'on' : 'off'}  ${metrics.metricAvailable ? 'metric head pose' : `ratio fallback gain ${trackingXyGain.toFixed(3)}`}`,
     `screen ${screenMetrics.label} (${screenMetrics.source})  ${(state.geometry?.screenHeightMm ?? 0).toFixed(0)} mm tall  1 unit ${(state.geometry?.worldUnitMm ?? 0).toFixed(1)} mm`,
     `viewing ${viewingDistanceMm.toFixed(0)} mm  eyeZ ${(state.geometry?.baselineEyeZ ?? 0).toFixed(2)}  fov ${(state.geometry?.verticalFovDeg ?? 0).toFixed(1)}°  head ${metrics.headDistanceMm ? `${metrics.headDistanceMm.toFixed(0)} mm` : '—'}`,
-    `depth span ${state.depthSpan.toFixed(2)}  disparity blend ${state.disparityBlend.toFixed(2)}  uniform-scale span ${uniformSpan === null ? '—' : uniformSpan.toFixed(1)}`,
+    `depth span ${state.depthSpan.toFixed(2)}  cone splay ${coneSplay.toFixed(2)}x  disparity blend ${state.disparityBlend.toFixed(2)}  uniform-scale span ${uniformSpan === null ? '—' : uniformSpan.toFixed(1)}`,
     `visible-front anchor ${state.anchorVisibleFront ? `on  pulled ${state.visibleFrontCorrection.toFixed(3)}` : 'off'}`,
     `depth range ${state.scene ? `${state.scene.sourceDepth.near.toFixed(2)}–${state.scene.sourceDepth.far.toFixed(2)}${state.scene.depthRangeIsFitted ? ' (refit to view)' : ''}` : '—'}`,
   ].join('\n');
