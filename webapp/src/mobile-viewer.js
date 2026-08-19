@@ -36,6 +36,7 @@ import {
   saveFrontCameraMirrorX,
 } from './mobile-runtime.js';
 import { fetchPublishedScenePair } from './mobile-scene-client.js';
+import { clampTiltCorrection, createTiltTracker } from './device-tilt.js';
 
 const canvas = document.getElementById('viewer-canvas');
 const sceneLabel = document.getElementById('scene-label');
@@ -56,6 +57,7 @@ const debugBlendInput = document.getElementById('debug-blend');
 const debugBlendValue = document.getElementById('debug-blend-value');
 const debugAnchorInput = document.getElementById('debug-anchor');
 const debugRefitInput = document.getElementById('debug-refit');
+const debugLevelInput = document.getElementById('debug-level');
 const viewerParams = new URLSearchParams(window.location.search);
 const debugTracking = viewerParams.has('debug');
 // A URL override for the horizontal direction. Stored settings do not survive
@@ -67,6 +69,11 @@ const flipOverride = viewerParams.has('flip')
 let trackingMirrorX = flipOverride === null
   ? loadFrontCameraMirrorX(window.localStorage, navigator.userAgent)
   : flipOverride;
+// Which way a device reports gravity relative to its screen is the same kind of
+// device-dependent convention as the front camera's handedness, so it gets the
+// same escape hatch: `?level=0` turns levelling off, `?levelFlip=1` reverses it.
+const levelInvert = viewerParams.get('levelFlip') === '1';
+const levelEnabledByUrl = viewerParams.get('level') !== '0';
 const trackingXyGain = inferFrontCameraXyGain(navigator.userAgent);
 
 // Physical screen size is what turns the virtual screen's world units into real
@@ -100,6 +107,10 @@ const state = {
   depthSpan: 1,
   disparityBlend: DEFAULT_DISPARITY_BLEND,
   motionCapabilities: null,
+  // A real object behind glass stays upright while its frame turns. Sharing the
+  // screen's up axis makes the whole scene roll with the device instead.
+  levelToGravity: levelEnabledByUrl,
+  screenRoll: null,
   anchorVisibleFront: true,
   refitDepthToView: true,
   baseDepthRange: null,
@@ -189,6 +200,7 @@ function updateDebugReadout() {
     `depth span ${state.depthSpan.toFixed(2)}  cone splay ${coneSplay.toFixed(2)}x  disparity blend ${state.disparityBlend.toFixed(2)}  uniform-scale span ${uniformSpan === null ? '—' : uniformSpan.toFixed(1)}`,
     `visible-front anchor ${state.anchorVisibleFront ? `on  pulled ${state.visibleFrontCorrection.toFixed(3)}` : 'off'}`,
     `sensors ${describeMotionCapabilities()}`,
+    `level ${state.levelToGravity ? 'on' : 'off'}${levelInvert ? ' flipped' : ''}  roll ${state.screenRoll === null ? '—' : `${((state.screenRoll * 180) / Math.PI).toFixed(1)}°`}  applied ${((clampTiltCorrection(state.screenRoll ?? 0, { invert: levelInvert }) * 180) / Math.PI).toFixed(1)}°`,
     `depth range ${state.scene ? `${state.scene.sourceDepth.near.toFixed(2)}–${state.scene.sourceDepth.far.toFixed(2)}${state.scene.depthRangeIsFitted ? ' (refit to view)' : ''}` : '—'}`,
   ].join('\n');
 }
@@ -357,12 +369,23 @@ function computeHeadCoupledMatrices(scene, interaction, eyePose) {
   // Pinch magnifies the miniature, so relief depth grows with it up to a bound
   // set by the viewer's real distance. Freezing depth would flatten the model
   // into an anamorphic card exactly when the viewer zooms in to inspect it.
-  const touchTransform = createReliefInteractionMatrix({
+  let touchTransform = createReliefInteractionMatrix({
     interaction,
     frontZ: pivotZ,
     depthSpan: scene.depthSpan || state.depthSpan,
     eyeZ: eye.z,
   });
+  const levelling = state.levelToGravity && state.screenRoll !== null
+    ? clampTiltCorrection(state.screenRoll, { invert: levelInvert })
+    : 0;
+  if (levelling !== 0) {
+    // Rotated about the glass so the correction pivots where the picture meets
+    // the screen, which is the one plane that must stay put.
+    let level = mat4.translate(mat4.identity(), [0, 0, pivotZ]);
+    level = mat4.rotateZ(level, -levelling);
+    level = mat4.translate(level, [0, 0, -pivotZ]);
+    touchTransform = mat4.multiply(level, touchTransform);
+  }
   let safeModel = constrainReliefBehindScreen({
     bounds: scene.bounds,
     modelMatrix: touchTransform,
@@ -463,6 +486,8 @@ async function loadPublishedScene({ force = false, variant = state.variant } = {
       state.variant = 'full';
       state.reducedAvailable = false;
       tracker.stop({ emit: false });
+      tilt.stop();
+      state.screenRoll = null;
       stopContinuousRendering();
       recenterButton.disabled = true;
       stopButton.disabled = true;
@@ -532,6 +557,16 @@ async function loadPublishedScene({ force = false, variant = state.variant } = {
 }
 
 let flipGestureGuard = false;
+
+// Reads which way is down so the miniature can stay upright while the device
+// rolls. Only the screen-plane roll is used, which is referenced to gravity and
+// so does not drift; no heading is involved.
+const tilt = createTiltTracker({
+  onRoll(roll) {
+    state.screenRoll = roll;
+    requestRender();
+  },
+});
 
 const touch = createTouchInteraction(canvas, {
   onChange(interaction) {
@@ -620,6 +655,13 @@ startButton.addEventListener('click', async () => {
       baselineEyeZ: geometry.baselineEyeZ,
     });
     await tracker.start();
+    // Requested from inside the same gesture as the camera, because iOS gates
+    // motion events on a user action. A refusal is not fatal: the window works
+    // without levelling.
+    if (state.levelToGravity) {
+      const permission = await tilt.start();
+      if (permission !== 'granted') state.screenRoll = null;
+    }
     document.body.dataset.state = 'viewing';
     startButton.textContent = 'Tracking active';
     recenterButton.disabled = false;
@@ -642,6 +684,8 @@ recenterButton.addEventListener('click', recenterTracking);
 
 stopButton.addEventListener('click', () => {
   tracker.stop();
+  tilt.stop();
+  state.screenRoll = null;
   stopContinuousRendering();
   startButton.textContent = 'Start 3D';
   startButton.disabled = false;
@@ -676,6 +720,7 @@ window.addEventListener('resize', handleViewportChange);
 window.addEventListener('orientationchange', () => requestAnimationFrame(handleViewportChange));
 window.visualViewport?.addEventListener('resize', handleViewportChange);
 window.addEventListener('pagehide', () => {
+  tilt.stop();
   tracker.stop({ emit: false });
   stopContinuousRendering();
   touch.destroy();
@@ -694,6 +739,7 @@ function syncDebugControls() {
   debugBlendValue.textContent = state.disparityBlend.toFixed(2);
   debugAnchorInput.checked = state.anchorVisibleFront;
   debugRefitInput.checked = state.refitDepthToView;
+  debugLevelInput.checked = state.levelToGravity;
 }
 
 if (debugTracking) {
@@ -719,6 +765,20 @@ if (debugTracking) {
     state.disparityBlend = Number(debugBlendInput.value);
     syncDebugControls();
     rebuildReliefGeometry();
+    requestRender();
+  });
+  debugLevelInput.addEventListener('change', async () => {
+    state.levelToGravity = debugLevelInput.checked;
+    if (state.levelToGravity && tracker.running) {
+      const permission = await tilt.start();
+      if (permission !== 'granted') {
+        setStatus('Motion access was refused; the view will not stay upright.');
+      }
+    } else if (!state.levelToGravity) {
+      tilt.stop();
+      state.screenRoll = null;
+    }
+    syncDebugControls();
     requestRender();
   });
   debugRefitInput.addEventListener('change', () => {

@@ -74,6 +74,8 @@ The off-axis projection uses a cyclopean eye at the midpoint between the detecte
 
 At the calibrated pose the rendered image reproduces the source image exactly. Every vertex sits on the ray from the calibrated eye through its own image-plane anchor, so projecting from that eye returns each vertex to its original pixel regardless of how deep the relief is or how depth was mapped. Both the relief span and the disparity blend can therefore be changed freely without disturbing what you see before moving.
 
+Rolling the device keeps the miniature upright. The relief otherwise shares the screen's up axis, so the whole scene rolls with the device, which a real object behind glass does not do. `webapp/src/device-tilt.js` takes the direction of gravity from `accelerationIncludingGravity` and uses only its angle within the screen plane, which is drift-free because it is referenced to gravity rather than to a heading. The correction is halved and capped at 18 degrees, because the scene is a picture with edges that a full counter-rotation would swing into view. iOS asks for motion access, which is requested inside the same tap that starts the camera; refusing it costs only the levelling. Add `?level=0` to switch it off or `?levelFlip=1` to reverse it if a device reports gravity the other way round.
+
 Head tracking is metric. MediaPipe's facial transformation matrix reports the head position in centimetres, and the viewer converts that into world units using the device's real screen size, so there is no tuned gain anywhere in the path. The virtual screen is two world units tall and fills the canvas, so one world unit is half the canvas's physical height. Because a browser cannot report physical size, `webapp/src/device-metrics.js` carries a small table (iPhone 17 and iPad mini A17 Pro) and falls back to a density estimate for unknown devices; a measured value stored in the browser always wins. Devices that do not supply the metric matrix fall back to the older landmark-ratio estimate and its gains (`0.325`, or `0.65` on iOS Chrome).
 
 **Publish to Mobile** creates a memory-bounded mobile asset rather than sending the full desktop export. The texture is the dominant consumer, not the mesh: at a quarter-million vertices the geometry is a few megabytes, while a 2048-square texture is 16 MB once decoded. So the mobile profile ships the texture as JPEG rather than lossless PNG, limits it to 2048 pixels on either side and two million pixels total, and the viewer decodes it with `createImageBitmap` and releases the bitmap as soon as it reaches the GPU. The grid is resampled to at most 262,144 vertices with 32-bit indices, which WebGL2 draws without an extension, and normals the unlit mobile renderer never consumes are omitted. Normal **Save glTF** exports keep their original mesh, normals, 32-bit indices, and lossless PNG texture.
@@ -108,6 +110,7 @@ The port-5173 relay keeps only the latest published scene in memory. Restarting 
 - `webapp/src/mobile-relief.js` – screen-fitted, behind-glass relief generation for published scenes.
 - `webapp/src/mobile-publish-mesh.js` – mobile-only grid and texture budgets used during publish, including the reduced fallback profile.
 - `webapp/src/device-metrics.js` – physical screen size per device and the viewing geometry derived from it.
+- `webapp/src/device-tilt.js` – gravity-referenced screen roll, used to keep the miniature upright as the device turns.
 - `webapp/src/webxr.js` – WebXR and Looking Glass session lifecycle, including the module preload that keeps the entry click's user activation intact.
 - `webapp/src/webxr.js` – WebXR session orchestration for VR and Looking Glass.
 
@@ -185,6 +188,8 @@ off-axis 投影は左右の目の中点にある仮想的な単眼（cyclopean e
 
 キャリブレーション姿勢では、描画結果は元画像と厳密に一致します。各頂点は「キャリブレーション眼からその頂点の画像面アンカーへ向かう光線」の上に置かれるため、その眼から投影すると relief の厚みや深度マッピングに関係なく元の画素位置へ戻ります。したがって relief 厚も disparity blend も、動く前に見える絵を乱すことなく自由に変更できます。
 
+端末をロールさせてもミニチュアは垂直を保ちます。relief は本来スクリーンの上方向を共有しているため、そのままだと端末と一緒にシーンごと傾きます（ガラスの向こうの実物はそうなりません）。`webapp/src/device-tilt.js` が `accelerationIncludingGravity` から重力方向を取り、その画面内角度だけを使います。方位ではなく重力を基準にするのでドリフトしません。補正量は半分かつ 18 度で頭打ちにしています。シーンには縁があり、完全に打ち消すと画像の隅が画面内に入ってくるためです。iOS はモーション許可を求めるので、カメラ開始と同じタップの中で要求します。拒否しても失われるのは水平維持だけです。`?level=0` で無効化、`?levelFlip=1` で反転できます（端末が重力を逆向きに報告する場合）。
+
 ヘッドトラッキングは実寸ベースです。MediaPipe の facial transformation matrix が頭部位置をセンチメートル単位で返すので、ビューアは端末の実画面サイズを使って world unit へ変換します。経路のどこにも調整ゲインはありません。仮想スクリーンは高さ 2 world unit でキャンバス全体に対応するため、1 world unit はキャンバスの物理高さの半分です。ブラウザは物理サイズを取得できないので、`webapp/src/device-metrics.js` が小さなテーブル（iPhone 17 / iPad mini A17 Pro）を持ち、未知の端末には密度からの推定値を使います。ブラウザに保存された実測値があれば常にそちらが優先されます。matrix を返さない端末では従来のランドマーク比推定とそのゲイン（`0.325`、iOS Chrome は `0.65`）にフォールバックします。
 
 **Publish to Mobile** は Desktop 用の完全な glTF とは別に、メモリ上限を設けたモバイル専用データを作ります。支配的なのはメッシュではなくテクスチャです。25万頂点でもジオメトリは数MBですが、2048角のテクスチャは展開後16MBになります。そこでモバイルプロファイルはテクスチャを可逆PNGではなくJPEGで送り、一辺2048px以下・合計200万画素以下に制限し、ビューア側は `createImageBitmap` でデコードして GPU に載った時点で即座に解放します。グリッドは最大262,144頂点に再サンプリングし、WebGL2 が拡張なしで扱える32bit index を使い、モバイルの unlit 描画で使わない法線は省きます。通常の **Save glTF** は元のメッシュ、法線、32bit index、可逆PNGテクスチャの挙動を維持します。
@@ -219,6 +224,7 @@ Looking Glass のフレーミングはモデル側ではなくディスプレイ
 - `webapp/src/mobile-relief.js` – 公開シーンを画面内・ガラス面より奥へ収める relief 生成。
 - `webapp/src/mobile-publish-mesh.js` – Publish時にだけ使うモバイル用グリッド／テクスチャ上限と、縮小フォールバックプロファイル。
 - `webapp/src/device-metrics.js` – 端末ごとの画面実寸と、そこから導出する視距離ジオメトリ。
+- `webapp/src/device-tilt.js` – 重力基準の画面内ロール角。端末を傾けてもミニチュアを垂直に保つために使用。
 - `webapp/src/webxr.js` – VR / Looking Glass 向け WebXR セッション管理。
 
 ### サードパーティリソース
