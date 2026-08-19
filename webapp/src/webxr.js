@@ -39,6 +39,7 @@ export class WebXRManager {
     this.isLookingGlass = false;
     this.lookPromise = null;
     this.lookModulePromise = null;
+    this.lookingGlassConfig = null;
     this.xrSupported = false;
     this.nativeXR = navigator.xr || null;
     this.xr = this.nativeXR;
@@ -218,6 +219,9 @@ export class WebXRManager {
             throw new Error('Looking Glass module missing polyfill export');
           }
           const merged = { ...(LookingGlassConfig || {}), ...config };
+          // Kept so the model can be placed relative to the hologram volume
+          // rather than against a hard-coded distance.
+          this.lookingGlassConfig = LookingGlassConfig || null;
           // Instantiate polyfill once. Subsequent calls reuse existing session.
           new LookingGlassWebXRPolyfill(merged);
           this.polyfillActive = true;

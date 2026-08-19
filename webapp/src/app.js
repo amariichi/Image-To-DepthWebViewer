@@ -78,12 +78,14 @@ const MIN_SCALE = 0.05;
 const MAX_SCALE = 25;
 const DESIRED_NEAR = -2.0;
 // The monitor path puts the model two units in front of a camera at the origin.
-// A Looking Glass hologram volume is centred on the reference-space origin
-// instead, so the same placement leaves the model sitting behind the display and
-// has to be dragged forward by hand every session. Entering Looking Glass mode
-// therefore lands the nearest surface on the focal plane; the Z offset slider
-// still works on top of that.
-const LOOKING_GLASS_FOCAL_Z = 0;
+// A Looking Glass shows a hologram volume `targetDiam` deep, centred on the
+// reference-space origin, so the same placement leaves the model behind that
+// volume and it has to be dragged forward by hand every session. Landing the
+// nearest surface on the front face of the volume instead lets the model recede
+// into it, which is where a depth relief belongs: nothing pops out past the
+// frame, where a Looking Glass clips it. Anchoring on the focal plane itself
+// overshot by roughly half the volume on a real device.
+const DEFAULT_LOOKING_GLASS_TARGET_DIAM = 3;
 const MAG_MIN = 0.1;
 const MAG_MAX = 100;
 const MAG_DEFAULT = 0.5;
@@ -1660,8 +1662,15 @@ function setupXR() {
       const prevMode = state.xr.mode;
       state.xr = { ...state.xr, ...updates };
       if (state.xr.mode !== prevMode) {
-        // Looking Glass places the model relative to its own focal plane.
+        // Looking Glass places the model relative to its hologram volume.
         invalidateModelMatrix();
+        if (state.xr.mode === 'looking-glass') {
+          const front = lookingGlassVolumeFrontZ();
+          showStatus(
+            `Looking Glass: nearest surface placed at z ${front.toFixed(2)}; use Z Offset to adjust.`,
+            5000,
+          );
+        }
       }
       if (!state.xr.supported && !state.xr.active) {
         state.xr.status = 'WebXR unavailable';
@@ -1854,10 +1863,18 @@ function updateMirrorVisibility() {
   }
 }
 
+function lookingGlassVolumeFrontZ() {
+  const diameter = Number(xrManager?.lookingGlassConfig?.targetDiam);
+  const safeDiameter = Number.isFinite(diameter) && diameter > 0
+    ? diameter
+    : DEFAULT_LOOKING_GLASS_TARGET_DIAM;
+  return -safeDiameter / 2;
+}
+
 function lookingGlassAutoTranslationZ() {
   const info = state.displayBounds;
   if (!info) return state.autoTranslationZ;
-  return clamp(LOOKING_GLASS_FOCAL_Z - info.maxZ, -20, 20);
+  return clamp(lookingGlassVolumeFrontZ() - info.maxZ, -20, 20);
 }
 
 function computeModelMatrix() {
