@@ -86,6 +86,14 @@ const DESIRED_NEAR = -2.0;
 // frame, where a Looking Glass clips it. Anchoring on the focal plane itself
 // overshot by roughly half the volume on a real device.
 const DEFAULT_LOOKING_GLASS_TARGET_DIAM = 3;
+// Measured on a Looking Glass Go. Sitting exactly on the front face reads as a
+// little too deep, and half a unit of pop-out is where it settled. One world
+// unit reads as roughly one metre of apparent scene depth on that display.
+const LOOKING_GLASS_POP_OUT = 0.5;
+// The same device frames the model about a quarter of a frame low, so it is
+// lifted by that fraction of the hologram volume. This is a framing offset of
+// the display, not of the model, so it does not scale with zoom.
+const LOOKING_GLASS_LIFT_FRACTION = 0.25;
 const MAG_MIN = 0.1;
 const MAG_MAX = 100;
 const MAG_DEFAULT = 0.5;
@@ -1665,9 +1673,8 @@ function setupXR() {
         // Looking Glass places the model relative to its hologram volume.
         invalidateModelMatrix();
         if (state.xr.mode === 'looking-glass') {
-          const front = lookingGlassVolumeFrontZ();
           showStatus(
-            `Looking Glass: nearest surface placed at z ${front.toFixed(2)}; use Z Offset to adjust.`,
+            `Looking Glass: nearest surface at z ${lookingGlassVolumeFrontZ().toFixed(2)}, lifted ${lookingGlassAutoTranslationY().toFixed(2)}; use Z Offset to adjust depth.`,
             5000,
           );
         }
@@ -1863,12 +1870,19 @@ function updateMirrorVisibility() {
   }
 }
 
-function lookingGlassVolumeFrontZ() {
+function lookingGlassTargetDiam() {
   const diameter = Number(xrManager?.lookingGlassConfig?.targetDiam);
-  const safeDiameter = Number.isFinite(diameter) && diameter > 0
+  return Number.isFinite(diameter) && diameter > 0
     ? diameter
     : DEFAULT_LOOKING_GLASS_TARGET_DIAM;
-  return -safeDiameter / 2;
+}
+
+function lookingGlassVolumeFrontZ() {
+  return -lookingGlassTargetDiam() / 2 + LOOKING_GLASS_POP_OUT;
+}
+
+function lookingGlassAutoTranslationY() {
+  return lookingGlassTargetDiam() * LOOKING_GLASS_LIFT_FRACTION;
 }
 
 function lookingGlassAutoTranslationZ() {
@@ -1882,13 +1896,17 @@ function computeModelMatrix() {
     return state.render.modelMatrix;
   }
 
-  const autoZ = state.xr.mode === 'looking-glass'
-    ? lookingGlassAutoTranslationZ()
-    : state.autoTranslationZ;
+  const isLookingGlass = state.xr.mode === 'looking-glass';
+  const autoZ = isLookingGlass ? lookingGlassAutoTranslationZ() : state.autoTranslationZ;
+  const autoY = isLookingGlass ? lookingGlassAutoTranslationY() : 0;
   const model = state.render.modelMatrix;
   const translateZ = state.controls.translationZ + autoZ;
   mat4.identityInto(model);
-  mat4.translateInPlace(model, [state.controls.translationX, state.controls.translationY, translateZ]);
+  mat4.translateInPlace(model, [
+    state.controls.translationX,
+    state.controls.translationY + autoY,
+    translateZ,
+  ]);
   mat4.translateInPlace(model, [0, 0, state.pivotZ]);
   mat4.rotateYInPlace(model, state.controls.rotationY);
   mat4.rotateXInPlace(model, state.controls.rotationX);
