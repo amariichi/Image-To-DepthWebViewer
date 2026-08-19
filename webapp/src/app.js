@@ -1817,6 +1817,9 @@ async function handleEnterVr() {
 // settled against real hardware, for example
 // `?lgTargetY=-0.5&lgTargetDiam=4`.
 const LOOKING_GLASS_CONFIG_KEYS = ['targetX', 'targetY', 'targetZ', 'targetDiam', 'fovy'];
+function lookingGlassFrameDefaults() {
+  return { targetY: LOOKING_GLASS_TARGET_Y, targetZ: LOOKING_GLASS_TARGET_Z };
+}
 
 function lookingGlassConfigFromUrl() {
   const params = new URLSearchParams(window.location.search);
@@ -1838,11 +1841,7 @@ async function handleEnterLookingGlass() {
   // attempt to derive them from the model's bounds disagreed with the measured
   // values in both magnitude and sign. They are left to the URL rather than
   // guessed at.
-  const overrides = {
-    targetY: LOOKING_GLASS_TARGET_Y,
-    targetZ: LOOKING_GLASS_TARGET_Z,
-    ...lookingGlassConfigFromUrl(),
-  };
+  const overrides = { ...lookingGlassFrameDefaults(), ...lookingGlassConfigFromUrl() };
   const success = await xrManager.enterLookingGlass(overrides);
   if (!success) {
     showStatus('Looking Glass session could not start.', 4000);
