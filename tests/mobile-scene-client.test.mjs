@@ -166,3 +166,87 @@ test('same revision after a relay restart reloads when publish identity changed'
   assert.equal(await pair.modelResponse.text(), 'replacement');
   assert.equal(calls, 2);
 });
+
+
+test('a reduced fallback build is published alongside the full one', async () => {
+  const calls = [];
+  const blob = new Blob([new Uint8Array([0x67, 0x6c, 0x54, 0x46])], { type: 'model/gltf-binary' });
+  const reducedBlob = new Blob([new Uint8Array([0x67, 0x6c])], { type: 'model/gltf-binary' });
+  await publishMobileScene({
+    blob,
+    reducedBlob,
+    filename: 'scene.glb',
+    manifest: createMobileSceneManifest({ sourceName: 'scene_RGBDE.png' }),
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      return { ok: true, json: async () => ({ revision: 3, hasReduced: true }) };
+    },
+  });
+  const form = calls[0].init.body;
+  assert.ok(form.get('model'));
+  assert.ok(form.get('modelReduced'), 'the fallback build must be uploaded with the full one');
+
+  const withoutFallback = [];
+  await publishMobileScene({
+    blob,
+    filename: 'scene.glb',
+    manifest: createMobileSceneManifest({ sourceName: 'scene_RGBDE.png' }),
+    fetchImpl: async (url, init) => {
+      withoutFallback.push({ url, init });
+      return { ok: true, json: async () => ({ revision: 4, hasReduced: false }) };
+    },
+  });
+  assert.equal(withoutFallback[0].init.body.get('modelReduced'), null);
+
+  await assert.rejects(
+    () => publishMobileScene({
+      blob,
+      reducedBlob: new Blob([], { type: 'model/gltf-binary' }),
+      filename: 'scene.glb',
+      manifest: createMobileSceneManifest({}),
+      fetchImpl: async () => ({ ok: true, json: async () => ({ revision: 5 }) }),
+    }),
+    /reduced mobile GLB/,
+  );
+});
+
+
+test('the reduced variant is requested explicitly and its served name reported back', async () => {
+  const requested = [];
+  const respond = (variant) => ({
+    ok: true,
+    status: 200,
+    headers: {
+      get: (name) => {
+        if (name === 'X-Scene-Revision') return '7';
+        if (name === 'X-Scene-Variant') return variant;
+        return null;
+      },
+    },
+  });
+  const fetchImpl = async (url) => {
+    requested.push(url);
+    if (url.startsWith('/viewer-api/scene/manifest')) {
+      return {
+        ok: true,
+        json: async () => ({
+          available: true,
+          revision: 7,
+          filename: 'scene.glb',
+          hasReduced: true,
+          manifest: { publishedAt: 'now' },
+        }),
+      };
+    }
+    return respond(url.includes('variant=reduced') ? 'reduced' : 'full');
+  };
+
+  const full = await fetchPublishedScenePair({ fetchImpl, force: true });
+  assert.ok(requested.some((url) => url === '/viewer-api/scene/model'));
+  assert.equal(full.servedVariant, 'full');
+
+  const reduced = await fetchPublishedScenePair({ fetchImpl, force: true, variant: 'reduced' });
+  assert.ok(requested.some((url) => url.includes('variant=reduced')));
+  assert.equal(reduced.servedVariant, 'reduced');
+  assert.equal(reduced.envelope.hasReduced, true);
+});

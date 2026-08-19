@@ -37,6 +37,18 @@ class PublishedScene:
     filename: str
     model: bytes
     manifest: dict[str, Any]
+    # An optional smaller build of the same scene. A constrained browser cannot
+    # be asked in advance how much memory it has, so it asks for this one only
+    # after the full build has actually failed to load.
+    reduced_model: bytes | None = None
+
+    def variant(self, name: str) -> bytes:
+        if name == "reduced" and self.reduced_model is not None:
+            return self.reduced_model
+        return self.model
+
+    def has_variant(self, name: str) -> bool:
+        return name != "reduced" or self.reduced_model is not None
 
 
 class SceneStore:
@@ -47,7 +59,13 @@ class SceneStore:
         self._revision = 0
         self._scene: PublishedScene | None = None
 
-    def publish(self, filename: str, model: bytes, manifest: dict[str, Any]) -> PublishedScene:
+    def publish(
+        self,
+        filename: str,
+        model: bytes,
+        manifest: dict[str, Any],
+        reduced_model: bytes | None = None,
+    ) -> PublishedScene:
         with self._lock:
             self._revision += 1
             self._scene = PublishedScene(
@@ -55,6 +73,7 @@ class SceneStore:
                 filename=filename,
                 model=bytes(model),
                 manifest=dict(manifest),
+                reduced_model=bytes(reduced_model) if reduced_model else None,
             )
             return self._scene
 
@@ -157,6 +176,7 @@ def create_app(
     async def publish_scene(
         model: UploadFile = File(...),
         manifest: str = Form(...),
+        model_reduced: UploadFile | None = File(default=None, alias="modelReduced"),
     ) -> dict[str, Any]:
         try:
             parsed_manifest = validate_manifest(manifest)
@@ -172,8 +192,28 @@ def create_app(
                 detail=f"model exceeds the {max_upload_bytes}-byte upload limit",
             )
 
-        scene = store.publish(_safe_filename(model.filename), model_bytes, parsed_manifest)
-        return {"revision": scene.revision, "filename": scene.filename}
+        reduced_bytes: bytes | None = None
+        if model_reduced is not None:
+            reduced_bytes = await model_reduced.read(max_upload_bytes + 1)
+            if not reduced_bytes:
+                reduced_bytes = None
+            elif len(reduced_bytes) > max_upload_bytes:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"modelReduced exceeds the {max_upload_bytes}-byte upload limit",
+                )
+
+        scene = store.publish(
+            _safe_filename(model.filename),
+            model_bytes,
+            parsed_manifest,
+            reduced_bytes,
+        )
+        return {
+            "revision": scene.revision,
+            "filename": scene.filename,
+            "hasReduced": scene.reduced_model is not None,
+        }
 
     @app.get("/viewer-api/scene/manifest")
     async def get_scene_manifest() -> dict[str, Any]:
@@ -185,6 +225,7 @@ def create_app(
             "revision": scene.revision,
             "filename": scene.filename,
             "manifest": dict(scene.manifest),
+            "hasReduced": scene.reduced_model is not None,
         }
 
     @app.get("/viewer-api/scene/model")
@@ -193,16 +234,23 @@ def create_app(
         if scene is None:
             raise HTTPException(status_code=404, detail="no mobile scene has been published")
 
-        etag = f'"scene-{scene.revision}"'
+        requested = request.query_params.get("variant", "full")
+        if requested not in {"full", "reduced"}:
+            raise HTTPException(status_code=400, detail="variant must be full or reduced")
+        served = requested if scene.has_variant(requested) else "full"
+        payload = scene.variant(served)
+
+        etag = f'"scene-{scene.revision}-{served}"'
         headers = {
             "ETag": etag,
             "X-Scene-Revision": str(scene.revision),
+            "X-Scene-Variant": served,
             "Cache-Control": "no-cache",
             "Content-Disposition": f'inline; filename="{scene.filename}"',
         }
         if request.headers.get("if-none-match") == etag:
             return Response(status_code=304, headers=headers)
-        return Response(content=scene.model, media_type="model/gltf-binary", headers=headers)
+        return Response(content=payload, media_type="model/gltf-binary", headers=headers)
 
     @app.delete("/viewer-api/scene")
     async def clear_scene() -> dict[str, bool]:

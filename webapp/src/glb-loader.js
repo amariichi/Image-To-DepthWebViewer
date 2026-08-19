@@ -101,21 +101,28 @@ function readIndices(json, binary, accessorIndex) {
   return source;
 }
 
+// The mobile publish profile ships JPEG because it transfers and decodes far
+// more cheaply than lossless PNG; desktop exports remain PNG.
+const SUPPORTED_IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg']);
+
 function readImage(json, binary, primitive) {
   const material = requireArrayEntry(json.materials, primitive.material, 'textured material');
   const textureIndex = material.pbrMetallicRoughness?.baseColorTexture?.index;
   const texture = requireArrayEntry(json.textures, textureIndex, 'base color texture');
   const image = requireArrayEntry(json.images, texture.source, 'embedded image');
-  if (image.mimeType !== 'image/png' || image.uri) {
-    throw new Error('Embedded base color image must be a PNG bufferView.');
+  if (!SUPPORTED_IMAGE_MIME_TYPES.has(image.mimeType) || image.uri) {
+    throw new Error('Embedded base color image must be a PNG or JPEG bufferView.');
   }
   const view = requireArrayEntry(json.bufferViews, image.bufferView, 'image bufferView');
   const offset = view.byteOffset || 0;
   if (!Number.isInteger(view.byteLength) || view.byteLength <= 0
       || offset < 0 || offset + view.byteLength > binary.byteLength) {
-    throw new Error('Embedded PNG exceeds the binary chunk.');
+    throw new Error('Embedded texture exceeds the binary chunk.');
   }
-  return new Uint8Array(binary.slice(offset, offset + view.byteLength));
+  return {
+    bytes: new Uint8Array(binary.slice(offset, offset + view.byteLength)),
+    mimeType: image.mimeType,
+  };
 }
 
 export function parseGlb(arrayBuffer) {
@@ -209,7 +216,7 @@ export function parseGlb(arrayBuffer) {
     positions,
     uvs,
     indices,
-    imageBlob: new Blob([imageBytes], { type: 'image/png' }),
+    imageBlob: new Blob([imageBytes.bytes], { type: imageBytes.mimeType }),
     nodeMatrix,
     bounds: computeBounds(positions),
   };

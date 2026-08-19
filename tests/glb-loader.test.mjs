@@ -11,7 +11,12 @@ function pad4(bytes, fill = 0) {
   return padded;
 }
 
-function createFixture({ missingUv = false, version = 2, compactIndices = false } = {}) {
+function createFixture({
+  missingUv = false,
+  version = 2,
+  compactIndices = false,
+  imageMimeType = 'image/png',
+} = {}) {
   const positions = new Float32Array([
     -1, -1, 0,
     1, -1, 0,
@@ -52,7 +57,7 @@ function createFixture({ missingUv = false, version = 2, compactIndices = false 
       { bufferView: 1, componentType: 5126, count: 3, type: 'VEC2' },
       { bufferView: 2, componentType: compactIndices ? 5123 : 5125, count: 3, type: 'SCALAR' },
     ],
-    images: [{ bufferView: 3, mimeType: 'image/png' }],
+    images: [{ bufferView: 3, mimeType: imageMimeType }],
     textures: [{ source: 0 }],
     materials: [{ pbrMetallicRoughness: { baseColorTexture: { index: 0 } } }],
     meshes: [{ primitives: [{ attributes, indices: 2, material: 0 }] }],
@@ -110,4 +115,21 @@ test('preserves compact indices to reduce mobile CPU and GPU memory', () => {
   const parsed = parseGlb(createFixture({ compactIndices: true }));
   assert.ok(parsed.indices instanceof Uint16Array);
   assert.deepEqual([...parsed.indices], [0, 1, 2]);
+});
+
+
+test('a JPEG mobile texture is accepted and a foreign image type is rejected', () => {
+  // The mobile publish profile ships JPEG because the texture, not the mesh,
+  // dominates what a constrained browser downloads and holds. Desktop exports
+  // remain lossless PNG, so both must parse.
+  const jpeg = parseGlb(createFixture({ imageMimeType: 'image/jpeg' }));
+  assert.equal(jpeg.imageBlob.type, 'image/jpeg');
+
+  const png = parseGlb(createFixture());
+  assert.equal(png.imageBlob.type, 'image/png');
+
+  assert.throws(
+    () => parseGlb(createFixture({ imageMimeType: 'image/webp' })),
+    /PNG or JPEG/,
+  );
 });

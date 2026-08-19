@@ -45,7 +45,7 @@ class ViewerHostApiTest(unittest.TestCase):
         model = b"\x67\x6c\x54\x46\x02\x00\x00\x00"
         published = self.publish(model=model, filename="scene.glb")
         self.assertEqual(published.status_code, 200)
-        self.assertEqual(published.json(), {"revision": 1, "filename": "scene.glb"})
+        self.assertEqual(published.json(), {"revision": 1, "filename": "scene.glb", "hasReduced": False})
 
         scene_manifest = self.client.get("/viewer-api/scene/manifest")
         self.assertEqual(scene_manifest.status_code, 200)
@@ -57,7 +57,7 @@ class ViewerHostApiTest(unittest.TestCase):
         self.assertEqual(fetched.status_code, 200)
         self.assertEqual(fetched.content, model)
         self.assertEqual(fetched.headers["content-type"], "model/gltf-binary")
-        self.assertEqual(fetched.headers["etag"], '"scene-1"')
+        self.assertEqual(fetched.headers["etag"], '"scene-1-full"')
         self.assertEqual(fetched.headers["x-scene-revision"], "1")
 
         not_modified = self.client.get(
@@ -108,6 +108,45 @@ class ViewerHostApiTest(unittest.TestCase):
         self.assertEqual(stored["depthSpan"], 1.8)
         self.assertEqual(stored["disparityBlend"], 0.5)
         self.assertEqual(stored["captureFovDeg"], 62.5)
+
+    def test_reduced_variant_is_served_only_when_it_was_published(self) -> None:
+        # A constrained browser cannot be asked how much memory it has, so it
+        # falls back to the smaller build only after a real load failure.
+        self.client.post(
+            "/viewer-api/scene",
+            files={"model": ("scene.glb", b"full-model", "model/gltf-binary")},
+            data={"manifest": manifest()},
+        )
+        self.assertFalse(self.client.get("/viewer-api/scene/manifest").json()["hasReduced"])
+        only_full = self.client.get("/viewer-api/scene/model", params={"variant": "reduced"})
+        self.assertEqual(only_full.content, b"full-model")
+        self.assertEqual(only_full.headers["x-scene-variant"], "full")
+
+        published = self.client.post(
+            "/viewer-api/scene",
+            files={
+                "model": ("scene.glb", b"full-model", "model/gltf-binary"),
+                "modelReduced": ("scene.glb", b"small-model", "model/gltf-binary"),
+            },
+            data={"manifest": manifest()},
+        )
+        self.assertTrue(published.json()["hasReduced"])
+        self.assertTrue(self.client.get("/viewer-api/scene/manifest").json()["hasReduced"])
+
+        reduced = self.client.get("/viewer-api/scene/model", params={"variant": "reduced"})
+        self.assertEqual(reduced.content, b"small-model")
+        self.assertEqual(reduced.headers["x-scene-variant"], "reduced")
+        self.assertEqual(reduced.headers["x-scene-revision"], "2")
+
+        full = self.client.get("/viewer-api/scene/model")
+        self.assertEqual(full.content, b"full-model")
+        self.assertEqual(full.headers["x-scene-variant"], "full")
+
+        # The two variants must never share a cache identity.
+        self.assertNotEqual(reduced.headers["etag"], full.headers["etag"])
+
+        rejected = self.client.get("/viewer-api/scene/model", params={"variant": "tiny"})
+        self.assertEqual(rejected.status_code, 400)
 
     def test_upload_limit_and_empty_model_are_rejected(self) -> None:
         with TestClient(create_app(WEBAPP_DIR, max_upload_bytes=4)) as limited_client:

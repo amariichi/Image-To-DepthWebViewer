@@ -154,14 +154,24 @@ function createBinaryBuffer() {
   return { append, finalize };
 }
 
-async function encodeImageData(imageData) {
+// The mobile profile ships JPEG because the texture, not the mesh, dominates
+// what a constrained browser must download and hold. A 2048-square photograph
+// is several megabytes as lossless PNG and a few hundred kilobytes as JPEG,
+// while the whole vertex budget is under two megabytes. Desktop exports keep
+// PNG so glTF files opened in other tools stay lossless.
+export const DEFAULT_TEXTURE_MIME_TYPE = 'image/png';
+export const MOBILE_TEXTURE_MIME_TYPE = 'image/jpeg';
+const JPEG_QUALITY = 0.86;
+
+async function encodeImageData(imageData, mimeType = DEFAULT_TEXTURE_MIME_TYPE) {
   if (!imageData) return null;
+  const quality = mimeType === MOBILE_TEXTURE_MIME_TYPE ? JPEG_QUALITY : undefined;
   try {
     if (typeof OffscreenCanvas !== 'undefined') {
       const canvas = new OffscreenCanvas(imageData.width, imageData.height);
       const ctx = canvas.getContext('2d');
       ctx.putImageData(imageData, 0, 0);
-      const blob = await canvas.convertToBlob({ type: 'image/png' });
+      const blob = await canvas.convertToBlob({ type: mimeType, quality });
       const buffer = await blob.arrayBuffer();
       return new Uint8Array(buffer);
     }
@@ -177,7 +187,7 @@ async function encodeImageData(imageData) {
         } else {
           reject(new Error('Canvas toBlob failed.'));
         }
-      }, 'image/png');
+      }, mimeType, quality);
     });
     const buffer = await blob.arrayBuffer();
     return new Uint8Array(buffer);
@@ -243,6 +253,7 @@ export async function createGlbBlob(options) {
     includeUVs = true,
     includeNormals = true,
     texture = null,
+    textureMimeType = DEFAULT_TEXTURE_MIME_TYPE,
   } = options || {};
 
   if (!mesh || !mesh.positions || !mesh.indices) {
@@ -270,7 +281,7 @@ export async function createGlbBlob(options) {
 
   let imageBytes = null;
   if (texture && texture.imageData) {
-    imageBytes = await encodeImageData(texture.imageData);
+    imageBytes = await encodeImageData(texture.imageData, textureMimeType);
     if (!imageBytes) {
       throw new Error('Failed to encode texture image.');
     }
@@ -345,7 +356,7 @@ export async function createGlbBlob(options) {
 
   const images = imageBytes ? [{
     bufferView: imageViewIndex,
-    mimeType: 'image/png',
+    mimeType: textureMimeType,
   }] : [];
 
   const materials = [{

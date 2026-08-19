@@ -53,6 +53,7 @@ export async function fetchPublishedScenePair({
   knownPublishedAt = null,
   force = false,
   maxAttempts = 3,
+  variant = 'full',
 } = {}) {
   if (typeof fetchImpl !== 'function') {
     throw new Error('Fetch is unavailable for mobile scene loading.');
@@ -77,26 +78,38 @@ export async function fetchPublishedScenePair({
       return { envelope, modelResponse: null, unchanged: true };
     }
 
-    const modelResponse = await fetchImpl('/viewer-api/scene/model', { cache: 'no-store' });
+    const modelUrl = variant === 'reduced'
+      ? '/viewer-api/scene/model?variant=reduced'
+      : '/viewer-api/scene/model';
+    const modelResponse = await fetchImpl(modelUrl, { cache: 'no-store' });
     if (modelResponse.status === 404) continue;
     if (!modelResponse.ok) {
       throw new Error(`Published GLB failed with HTTP ${modelResponse.status}.`);
     }
     const modelRevision = Number(modelResponse.headers.get('X-Scene-Revision'));
     if (modelRevision !== envelope.revision) continue;
-    return { envelope, modelResponse, unchanged: false };
+    return {
+      envelope,
+      modelResponse,
+      unchanged: false,
+      servedVariant: modelResponse.headers.get('X-Scene-Variant') || 'full',
+    };
   }
   throw new Error('Published scene changed repeatedly while loading; retrying on the next poll.');
 }
 
 export async function publishMobileScene({
   blob,
+  reducedBlob = null,
   filename,
   manifest,
   fetchImpl = globalThis.fetch,
 }) {
   if (!(blob instanceof Blob) || blob.size === 0) {
     throw new Error('A non-empty GLB blob is required for mobile publish.');
+  }
+  if (reducedBlob !== null && (!(reducedBlob instanceof Blob) || reducedBlob.size === 0)) {
+    throw new Error('The reduced mobile GLB must be a non-empty blob when provided.');
   }
   if (typeof fetchImpl !== 'function') {
     throw new Error('Fetch is unavailable for mobile publish.');
@@ -108,6 +121,10 @@ export async function publishMobileScene({
   const form = new FormData();
   form.append('model', blob, modelFilename);
   form.append('manifest', JSON.stringify(manifest));
+  // Published alongside the full build so a constrained browser has something
+  // to fall back to after a genuine load failure. No browser API on iOS can be
+  // asked for available memory ahead of time.
+  if (reducedBlob) form.append('modelReduced', reducedBlob, modelFilename);
 
   const response = await fetchImpl('/viewer-api/scene', {
     method: 'POST',

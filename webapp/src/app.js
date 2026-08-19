@@ -8,13 +8,18 @@ import { computeDeformedBounds, createDeformedPositions } from './mesh-evaluator
 import { createRenderer, mat4 } from './rendering.js';
 import WebXRManager from './webxr.js';
 import XRHintOverlay from './xr-hints.js';
-import { createGlbBlob } from './gltf-exporter.js';
+import {
+  DEFAULT_TEXTURE_MIME_TYPE,
+  MOBILE_TEXTURE_MIME_TYPE,
+  createGlbBlob,
+} from './gltf-exporter.js';
 import {
   createMobileSceneManifest,
   mobileDepthSpanForMagnification,
   publishMobileScene,
 } from './mobile-scene-client.js';
 import {
+  MOBILE_PUBLISH_PROFILES,
   createMobilePublishMesh,
   fitMobileTextureSize,
 } from './mobile-publish-mesh.js';
@@ -490,8 +495,11 @@ function getExportBaseName() {
   return 'depth_export';
 }
 
-function createMobileTextureImageData(imageData) {
-  const fitted = fitMobileTextureSize(imageData.width, imageData.height);
+function createMobileTextureImageData(imageData, budget = MOBILE_PUBLISH_PROFILES.full) {
+  const fitted = fitMobileTextureSize(imageData.width, imageData.height, {
+    maxDimension: budget.maxTextureDimension,
+    maxPixels: budget.maxTexturePixels,
+  });
   if (fitted.width === imageData.width && fitted.height === imageData.height) return imageData;
   const sourceCanvas = document.createElement('canvas');
   sourceCanvas.width = imageData.width;
@@ -509,7 +517,11 @@ function createMobileTextureImageData(imageData) {
   return targetContext.getImageData(0, 0, fitted.width, fitted.height);
 }
 
-async function createCurrentGlb({ modelMatrix, mobileOptimized = false } = {}) {
+async function createCurrentGlb({
+  modelMatrix,
+  mobileOptimized = false,
+  mobileProfile = MOBILE_PUBLISH_PROFILES.full,
+} = {}) {
   if (!state.mesh) {
     throw new Error('No mesh available to export.');
   }
@@ -520,10 +532,13 @@ async function createCurrentGlb({ modelMatrix, mobileOptimized = false } = {}) {
   const textureFileName = `${baseName || 'depth_export'}.png`;
   const deformedPositions = createDeformedPositions(state.mesh, state.options);
   const mesh = mobileOptimized
-    ? createMobilePublishMesh({ ...state.mesh, positions: deformedPositions })
+    ? createMobilePublishMesh(
+      { ...state.mesh, positions: deformedPositions },
+      { maxVertices: mobileProfile.maxVertices },
+    )
     : { ...state.mesh, positions: deformedPositions };
   const textureImage = mobileOptimized
-    ? createMobileTextureImageData(state.rgbde.textureImage)
+    ? createMobileTextureImageData(state.rgbde.textureImage, mobileProfile)
     : state.rgbde.textureImage;
   const blob = await createGlbBlob({
     mesh,
@@ -531,6 +546,9 @@ async function createCurrentGlb({ modelMatrix, mobileOptimized = false } = {}) {
     meshName: baseName,
     includeUVs: Boolean(mesh.uvs),
     includeNormals: !mobileOptimized,
+    // The texture dominates what a phone must download and hold, so the mobile
+    // profile ships JPEG. Desktop glTF exports stay lossless PNG.
+    textureMimeType: mobileOptimized ? MOBILE_TEXTURE_MIME_TYPE : DEFAULT_TEXTURE_MIME_TYPE,
     texture: {
       imageData: textureImage,
       fileName: textureFileName,
@@ -589,6 +607,11 @@ async function publishCurrentMeshToMobile() {
     // Omitting modelMatrix keeps the GLB node transform-free. Mobile placement is
     // computed independently from the desktop inspection camera and auto-fit state.
     const { blob, filename, profile } = await createCurrentGlb({ mobileOptimized: true });
+    showStatus('Preparing mobile fallback scene…', 0);
+    const fallback = await createCurrentGlb({
+      mobileOptimized: true,
+      mobileProfile: MOBILE_PUBLISH_PROFILES.reduced,
+    });
     const manifest = createMobileSceneManifest({
       sourceName: state.asset.filename,
       depthSpan: mobileDepthSpanForMagnification(state.options.magnification),
@@ -597,9 +620,14 @@ async function publishCurrentMeshToMobile() {
       // reporting only; the presentation itself never depends on it.
       captureFovDeg: state.meshConfig.geomFov,
     });
-    const result = await publishMobileScene({ blob, filename, manifest });
+    const result = await publishMobileScene({
+      blob,
+      reducedBlob: fallback.blob,
+      filename,
+      manifest,
+    });
     showStatus(
-      `Published optimized ${filename} to mobile (revision ${result.revision}, ${profile.vertexCount.toLocaleString()} vertices, ${profile.textureWidth}×${profile.textureHeight}).`,
+      `Published optimized ${filename} to mobile (revision ${result.revision}, ${profile.vertexCount.toLocaleString()} vertices, ${profile.textureWidth}×${profile.textureHeight}, ${(blob.size / (1024 * 1024)).toFixed(1)} MB; fallback ${(fallback.blob.size / (1024 * 1024)).toFixed(1)} MB).`,
       5500,
     );
   } catch (error) {

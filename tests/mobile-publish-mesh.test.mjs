@@ -4,6 +4,7 @@ import test from 'node:test';
 import { createGlbBlob } from '../webapp/src/gltf-exporter.js';
 import {
   MAX_MOBILE_PUBLISH_VERTICES,
+  MOBILE_PUBLISH_PROFILES,
   createMobilePublishMesh,
   fitMobileTextureSize,
 } from '../webapp/src/mobile-publish-mesh.js';
@@ -35,18 +36,50 @@ function readGlbJson(blobBuffer) {
 }
 
 
-test('mobile publish resamples a dense grid below the 16-bit vertex ceiling', () => {
+test('mobile publish resamples a dense grid and keeps the image boundary', () => {
   const source = createGrid(1000, 500);
   const mobile = createMobilePublishMesh(source);
   assert.ok(mobile.vertexCount <= MAX_MOBILE_PUBLISH_VERTICES);
-  assert.ok(mobile.vertexCount > 50_000);
-  assert.ok(mobile.indices instanceof Uint16Array);
+  // The old ceiling was the 16-bit index limit, which cost real mesh
+  // resolution for a saving of a few megabytes. WebGL2 draws 32-bit indices
+  // without an extension, so the grid now stays near the desktop density.
+  assert.ok(mobile.vertexCount > 200_000);
+  assert.ok(mobile.indices instanceof Uint32Array);
   let maxIndex = 0;
   for (const index of mobile.indices) maxIndex = Math.max(maxIndex, index);
   assert.ok(maxIndex < mobile.vertexCount);
   assert.deepEqual([...mobile.positions.slice(0, 3)], [0, 0, -1]);
   assert.deepEqual([...mobile.positions.slice(-3)], [1000, 500, -1501]);
   assert.deepEqual([...mobile.uvs.slice(-2)], [1, 1]);
+});
+
+
+test('the reduced fallback profile stays inside the 16-bit index ceiling', () => {
+  const source = createGrid(1000, 500);
+  const reduced = createMobilePublishMesh(source, {
+    maxVertices: MOBILE_PUBLISH_PROFILES.reduced.maxVertices,
+  });
+  assert.ok(reduced.vertexCount <= MOBILE_PUBLISH_PROFILES.reduced.maxVertices);
+  assert.ok(reduced.indices instanceof Uint16Array);
+  // Both profiles must still describe the same picture, corner for corner.
+  assert.deepEqual([...reduced.positions.slice(0, 3)], [0, 0, -1]);
+  assert.deepEqual([...reduced.positions.slice(-3)], [1000, 500, -1501]);
+  assert.deepEqual([...reduced.uvs.slice(0, 2)], [0, 0]);
+  assert.deepEqual([...reduced.uvs.slice(-2)], [1, 1]);
+});
+
+
+test('the reduced texture budget is strictly smaller than the full one', () => {
+  const full = fitMobileTextureSize(3840, 2160, {
+    maxDimension: MOBILE_PUBLISH_PROFILES.full.maxTextureDimension,
+    maxPixels: MOBILE_PUBLISH_PROFILES.full.maxTexturePixels,
+  });
+  const reduced = fitMobileTextureSize(3840, 2160, {
+    maxDimension: MOBILE_PUBLISH_PROFILES.reduced.maxTextureDimension,
+    maxPixels: MOBILE_PUBLISH_PROFILES.reduced.maxTexturePixels,
+  });
+  assert.ok(reduced.width * reduced.height < full.width * full.height);
+  assert.ok(Math.abs(reduced.width / reduced.height - 16 / 9) < 0.01);
 });
 
 

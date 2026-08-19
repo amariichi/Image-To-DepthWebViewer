@@ -19,6 +19,8 @@ void main() {
   outColor = vec4(texture(uTexture, vUv).rgb, 1.0);
 }`;
 
+export const MAX_BACKBUFFER_PIXELS = 2_600_000;
+
 function compileShader(gl, type, source) {
   const shader = gl.createShader(type);
   gl.shaderSource(shader, source);
@@ -89,7 +91,14 @@ export function createMobileRenderer(canvas) {
   gl.clearColor(0.031, 0.035, 0.035, 1);
 
   function resize(width, height, devicePixelRatio = window.devicePixelRatio || 1) {
-    const pixelRatio = Math.min(Math.max(devicePixelRatio, 1), 2);
+    // The multisampled default framebuffer is allocated before a single
+    // triangle is drawn, and on a tablet at full device pixel ratio it is one
+    // of the largest single allocations the page makes. Capping total
+    // backbuffer pixels leaves phones at full sharpness and trims only the
+    // largest panels.
+    const requested = Math.min(Math.max(devicePixelRatio, 1), 2);
+    const cap = Math.sqrt(MAX_BACKBUFFER_PIXELS / Math.max(width * height, 1));
+    const pixelRatio = Math.max(Math.min(requested, cap), 1);
     const displayWidth = Math.max(1, Math.round(width * pixelRatio));
     const displayHeight = Math.max(1, Math.round(height * pixelRatio));
     if (canvas.width !== displayWidth || canvas.height !== displayHeight) {
@@ -120,6 +129,9 @@ export function createMobileRenderer(canvas) {
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
     gl.bindTexture(gl.TEXTURE_2D, null);
+    // Once the pixels are on the GPU the decoded bitmap is dead weight, and on
+    // a constrained browser it is the biggest thing still held in the page.
+    image.close?.();
   }
 
   function clear() {

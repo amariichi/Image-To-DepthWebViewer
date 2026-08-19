@@ -1,6 +1,32 @@
-export const MAX_MOBILE_PUBLISH_VERTICES = 65_535;
+// The earlier 65,535 ceiling came from the 16-bit index limit, not from a
+// memory measurement. WebGL2 draws 32-bit indices with no extension, and the
+// arithmetic says the cap was aimed at the wrong consumer: at 65,535 vertices
+// the whole geometry is about 2 MB, while a 2048-square texture is 16 MB once
+// decoded. Mesh resolution now matters visually as well, because triangles
+// that straddle a depth discontinuity are deliberately kept as the hole filler
+// and their stair-stepping is what a coarse grid makes obvious.
+export const MAX_MOBILE_PUBLISH_VERTICES = 262_144;
+export const REDUCED_MOBILE_PUBLISH_VERTICES = 65_535;
 export const MAX_MOBILE_TEXTURE_DIMENSION = 2048;
 export const MAX_MOBILE_TEXTURE_PIXELS = 2_000_000;
+export const REDUCED_MOBILE_TEXTURE_DIMENSION = 1024;
+export const REDUCED_MOBILE_TEXTURE_PIXELS = 800_000;
+
+// A device that fails to load the full profile is offered this one instead.
+// No browser API on iOS reports available memory, so the fallback has to be
+// driven by an actual load failure rather than by a prediction.
+export const MOBILE_PUBLISH_PROFILES = Object.freeze({
+  full: Object.freeze({
+    maxVertices: MAX_MOBILE_PUBLISH_VERTICES,
+    maxTextureDimension: MAX_MOBILE_TEXTURE_DIMENSION,
+    maxTexturePixels: MAX_MOBILE_TEXTURE_PIXELS,
+  }),
+  reduced: Object.freeze({
+    maxVertices: REDUCED_MOBILE_PUBLISH_VERTICES,
+    maxTextureDimension: REDUCED_MOBILE_TEXTURE_DIMENSION,
+    maxTexturePixels: REDUCED_MOBILE_TEXTURE_PIXELS,
+  }),
+});
 
 
 function positiveInteger(value, label) {

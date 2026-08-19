@@ -68,7 +68,7 @@ let viewingDistanceMm = loadStoredNumber(window.localStorage, VIEWING_DISTANCE_S
 const state = {
   revision: 0,
   sourceScene: null,
-  sourceImage: null,
+  sourceImageSize: null,
   scene: null,
   manifest: null,
   interaction: null,
@@ -78,6 +78,8 @@ const state = {
   eyePose: null,
   orientation: classifyViewport(window.innerWidth, window.innerHeight),
   geometry: null,
+  variant: 'full',
+  reducedAvailable: null,
   depthSpan: 1,
   disparityBlend: DEFAULT_DISPARITY_BLEND,
 };
@@ -156,31 +158,41 @@ function stopContinuousRendering() {
   renderRate.reset();
 }
 
-function loadImage(blob, timeoutMs = 15_000) {
-  return new Promise((resolve, reject) => {
+// `createImageBitmap` decodes off the main thread and hands back a GPU-ready
+// bitmap, so no full-size RGBA copy is ever materialised in the page. The
+// texture is the single largest thing a constrained browser has to hold, so
+// this is where the memory headroom actually comes from.
+function decodeTexture(blob, timeoutMs = 15_000) {
+  const timeout = new Promise((_, reject) => {
+    window.setTimeout(
+      () => reject(new Error('Published scene texture decode timed out on this device.')),
+      timeoutMs,
+    );
+  });
+  if (typeof createImageBitmap === 'function') {
+    return Promise.race([
+      createImageBitmap(blob).catch(() => {
+        throw new Error('Published scene texture could not be decoded.');
+      }),
+      timeout,
+    ]);
+  }
+  const legacy = new Promise((resolve, reject) => {
     const url = URL.createObjectURL(blob);
     const image = new Image();
-    let settled = false;
     const finish = (callback, value) => {
-      if (settled) return;
-      settled = true;
-      window.clearTimeout(timer);
       URL.revokeObjectURL(url);
       callback(value);
     };
-    const timer = window.setTimeout(() => {
-      image.src = '';
-      finish(reject, new Error('Published scene texture decode timed out on this device. Republish the optimized mobile scene.'));
-    }, timeoutMs);
-    image.onload = () => {
-      finish(resolve, image);
-    };
-    image.onerror = () => {
-      finish(reject, new Error('Published scene texture could not be decoded. Republish the optimized mobile scene.'));
-    };
+    image.onload = () => finish(resolve, image);
+    image.onerror = () => finish(
+      reject,
+      new Error('Published scene texture could not be decoded.'),
+    );
     image.decoding = 'async';
     image.src = url;
   });
+  return Promise.race([legacy, timeout]);
 }
 
 // The canvas is the physical window. Its CSS height times the device's real
@@ -241,11 +253,10 @@ function computeHeadCoupledMatrices(scene, interaction, eyePose) {
 }
 
 function rebuildReliefGeometry({ upload = true } = {}) {
-  if (!state.sourceScene || !state.sourceImage) return;
+  if (!state.sourceScene || !state.sourceImageSize) return;
   const aspect = Math.max(canvas.clientWidth / Math.max(canvas.clientHeight, 1), 0.1);
   const screen = computeVirtualScreen(aspect);
-  const sourceWidth = state.sourceImage.naturalWidth || state.sourceImage.width;
-  const sourceHeight = state.sourceImage.naturalHeight || state.sourceImage.height;
+  const { width: sourceWidth, height: sourceHeight } = state.sourceImageSize;
   state.scene = createMobileReliefScene({
     scene: state.sourceScene,
     sourceAspect: sourceWidth / Math.max(sourceHeight, 1),
@@ -271,22 +282,25 @@ function render() {
   renderer.render(computeHeadCoupledMatrices(state.scene, state.interaction, state.eyePose));
 }
 
-async function loadPublishedScene({ force = false } = {}) {
+async function loadPublishedScene({ force = false, variant = state.variant } = {}) {
   if (state.loading) return;
   state.loading = true;
   const wasViewing = tracker.running || document.body.dataset.state === 'viewing';
   try {
-    const { envelope, modelResponse, unchanged } = await fetchPublishedScenePair({
+    const { envelope, modelResponse, unchanged, servedVariant } = await fetchPublishedScenePair({
       knownRevision: state.revision,
       knownPublishedAt: state.manifest?.publishedAt,
       force,
+      variant,
     });
     if (!envelope.available) {
       state.sourceScene = null;
-      state.sourceImage = null;
+      state.sourceImageSize = null;
       state.scene = null;
       state.revision = 0;
       startButton.disabled = true;
+      state.variant = 'full';
+      state.reducedAvailable = false;
       tracker.stop({ emit: false });
       stopContinuousRendering();
       recenterButton.disabled = true;
@@ -308,9 +322,16 @@ async function loadPublishedScene({ force = false } = {}) {
     setStatus(`Parsing ${envelope.filename}…`);
     const sourceScene = parseGlb(modelBuffer);
     setStatus(`Decoding ${envelope.filename} texture…`);
-    const image = await loadImage(sourceScene.imageBlob);
+    const image = await decodeTexture(sourceScene.imageBlob);
     state.sourceScene = sourceScene;
-    state.sourceImage = image;
+    // The bitmap is released as soon as it reaches the GPU, so its dimensions
+    // are kept separately for the relief rebuilds that follow every resize.
+    state.sourceImageSize = {
+      width: image.naturalWidth || image.width,
+      height: image.naturalHeight || image.height,
+    };
+    state.variant = servedVariant || variant;
+    state.reducedAvailable = Boolean(envelope.hasReduced);
     state.manifest = envelope.manifest;
     state.depthSpan = Number.isFinite(envelope.manifest?.depthSpan)
       ? envelope.manifest.depthSpan
@@ -325,12 +346,21 @@ async function loadPublishedScene({ force = false } = {}) {
     startButton.disabled = false;
     sceneLabel.textContent = `${envelope.filename} · r${envelope.revision}`;
     document.body.dataset.state = wasViewing ? 'viewing' : 'ready';
+    const variantNote = state.variant === 'reduced' ? ' (reduced build)' : '';
     setStatus(wasViewing
-      ? `Scene updated to revision ${envelope.revision}.`
-      : 'Scene ready. Drag to rotate; pinch to zoom and pan.');
+      ? `Scene updated to revision ${envelope.revision}${variantNote}.`
+      : `Scene ready${variantNote}. Drag to rotate; pinch to zoom and pan.`);
     requestRender();
   } catch (error) {
     console.error(error);
+    // No browser API on iOS reports available memory, so the smaller build can
+    // only be chosen after the full one has genuinely failed to load.
+    if (variant !== 'reduced' && state.reducedAvailable !== false) {
+      state.loading = false;
+      setStatus('Full scene did not load on this device; retrying with the reduced build…');
+      await loadPublishedScene({ force: true, variant: 'reduced' });
+      return;
+    }
     document.body.dataset.state = 'error';
     setStatus(error.message || 'Published scene could not be loaded.');
   } finally {
