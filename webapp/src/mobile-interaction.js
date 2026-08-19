@@ -126,6 +126,9 @@ export function createTouchInteraction(target, { onChange = () => {} } = {}) {
 
   return {
     getState: () => ({ ...state }),
+    // The viewer controls sit over the canvas, so a finger that is part of a
+    // pinch can land on one and activate it on release.
+    activePointerCount: () => pointers.size,
     reset(nextState = {}) {
       pointers.clear();
       baseline = null;

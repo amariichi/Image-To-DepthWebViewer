@@ -94,7 +94,7 @@ button {
   margin: 0;
   color: var(--signal);
   white-space: pre-line;
-  font: 9px/1.35 "SFMono-Regular", Consolas, monospace;
+  font: 12px/1.5 "SFMono-Regular", Consolas, monospace;
 }
 
 .viewer-stage::after {
@@ -439,4 +439,10 @@ body[data-state="tracking-error"] .startup-panel .intro {
 
 .debug-controls .debug-toggle input {
   accent-color: var(--signal);
+}
+
+#flip-tracking-x[aria-pressed="false"] {
+  border-color: var(--signal);
+  background: var(--signal);
+  color: var(--ink);
 }

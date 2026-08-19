@@ -92,3 +92,35 @@ test('orientation-style cancellation drops stale pointers and accepts a fresh ge
   assert.ok(interaction.getState().yaw > 0);
   interaction.destroy();
 });
+
+
+test('active pointers on the canvas are reported so overlaid controls can defer', () => {
+  // The viewer controls sit over the canvas. A finger that is part of a pinch
+  // can land on one and activate it on release, and an accidental left/right
+  // flip then persists across sessions, which looks like tracking reversing on
+  // its own.
+  const target = new EventTarget();
+  target.clientHeight = 800;
+  target.setPointerCapture = () => {};
+  const interaction = createTouchInteraction(target);
+  const pointer = (type, pointerId, clientX, clientY) => {
+    const event = new Event(type, { cancelable: true });
+    Object.assign(event, { pointerId, clientX, clientY });
+    target.dispatchEvent(event);
+  };
+
+  assert.equal(interaction.activePointerCount(), 0);
+  pointer('pointerdown', 1, 100, 100);
+  assert.equal(interaction.activePointerCount(), 1);
+  pointer('pointerdown', 2, 200, 100);
+  assert.equal(interaction.activePointerCount(), 2);
+  pointer('pointerup', 2, 200, 100);
+  assert.equal(interaction.activePointerCount(), 1);
+  pointer('pointerup', 1, 100, 100);
+  assert.equal(interaction.activePointerCount(), 0);
+
+  pointer('pointerdown', 3, 100, 100);
+  interaction.cancelGesture();
+  assert.equal(interaction.activePointerCount(), 0);
+  interaction.destroy();
+});

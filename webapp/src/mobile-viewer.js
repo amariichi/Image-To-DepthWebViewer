@@ -517,6 +517,8 @@ async function loadPublishedScene({ force = false, variant = state.variant } = {
   }
 }
 
+let flipGestureGuard = false;
+
 const touch = createTouchInteraction(canvas, {
   onChange(interaction) {
     state.interaction = interaction;
@@ -552,12 +554,31 @@ const tracker = new HeadTracker({
 
 function updateTrackingDirectionButton() {
   flipTrackingXButton.setAttribute('aria-pressed', String(trackingMirrorX));
+  // This button sits over the canvas, so a stray finger during a pinch can
+  // toggle it, and the wrong setting then persists across sessions. Say so
+  // loudly rather than leaving it to be discovered by the view feeling wrong.
+  flipTrackingXButton.textContent = trackingMirrorX ? 'Flip L/R' : 'L/R inverted';
   flipTrackingXButton.title = trackingMirrorX
-    ? 'Horizontal camera coordinates are flipped'
-    : 'Horizontal camera coordinates are used as delivered';
+    ? 'Horizontal camera coordinates are flipped (the normal setting)'
+    : 'Horizontal camera coordinates are used as delivered (inverted from normal)';
 }
 
+// Guard against a finger that is really part of a canvas gesture. This button
+// overlays the canvas, and an accidental flip persists across sessions, which
+// makes it look as though tracking has spontaneously reversed.
+flipTrackingXButton.addEventListener('pointerdown', (event) => {
+  if (touch.activePointerCount() > 0) {
+    event.preventDefault();
+    flipGestureGuard = true;
+    setStatus('Left/right button ignored during a canvas gesture.');
+  }
+});
+
 flipTrackingXButton.addEventListener('click', () => {
+  if (flipGestureGuard) {
+    flipGestureGuard = false;
+    return;
+  }
   trackingMirrorX = !trackingMirrorX;
   saveFrontCameraMirrorX(window.localStorage, trackingMirrorX);
   tracker.setMirrorX(trackingMirrorX);
