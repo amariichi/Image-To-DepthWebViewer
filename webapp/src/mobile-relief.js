@@ -173,6 +173,27 @@ export function createMobileReliefScene({
   };
 }
 
+// How deep the relief would be if the scene were simply scaled uniformly, with
+// no depth remapping at all -- the way the desktop and Looking Glass paths
+// present the same mesh. A perspective projection already compresses distance
+// by 1 / d on its own, so uniform scaling is a legitimate presentation; the
+// catch is that a scene with a 1:5000 depth ratio then extends thousands of
+// world units behind the glass, which is a window onto a landscape rather than
+// a miniature sitting just behind the screen.
+export function estimateUniformScaleDepthSpan({
+  sourceDepth,
+  imageRectHeight,
+  captureFovDeg,
+}) {
+  if (!sourceDepth || !(sourceDepth.near > 0) || !(sourceDepth.far > sourceDepth.near)) return null;
+  if (!Number.isFinite(imageRectHeight) || !(imageRectHeight > 0)) return null;
+  if (!Number.isFinite(captureFovDeg) || !(captureFovDeg > 0) || captureFovDeg >= 180) return null;
+  const realHeightAtNear = 2 * sourceDepth.near * Math.tan((captureFovDeg * Math.PI) / 360);
+  if (!(realHeightAtNear > 0)) return null;
+  const scale = imageRectHeight / realHeightAtNear;
+  return scale * (sourceDepth.far - sourceDepth.near);
+}
+
 export function reliefInteractionDepthScale({
   scale,
   depthSpan,

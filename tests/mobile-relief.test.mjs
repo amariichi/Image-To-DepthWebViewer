@@ -7,6 +7,7 @@ import {
   constrainReliefBehindScreen,
   createReliefInteractionMatrix,
   createMobileReliefScene,
+  estimateUniformScaleDepthSpan,
   normalizeReliefDepth,
   reliefInteractionDepthScale,
 } from '../webapp/src/mobile-relief.js';
@@ -223,4 +224,32 @@ test('a closer cyclopean eye leaves glass size fixed and only slightly shrinks f
   assert.ok(Math.abs(baselineFar - screenX) < 1e-6);
   assert.ok(closerFar < baselineFar);
   assert.ok(baselineFar - closerFar < 0.005);
+});
+
+
+test('the uniform-scale span reports how much a scene is being compressed', () => {
+  // A coastal portrait: subject at 2 m, horizon at 10 km, captured at a 50
+  // degree vertical field of view and shown about 1.47 world units tall.
+  // Scaling that scene uniformly, with no depth remapping at all, is what the
+  // desktop and Looking Glass paths do, and it would put the horizon thousands
+  // of world units behind the glass rather than one.
+  const span = estimateUniformScaleDepthSpan({
+    sourceDepth: { near: 2, far: 10_000 },
+    imageRectHeight: 1.47,
+    captureFovDeg: 50,
+  });
+  assert.ok(span > 5000, `expected a very deep uniform-scale span, got ${span}`);
+
+  // A macro subject is already close to a miniature, so the two agree.
+  const macro = estimateUniformScaleDepthSpan({
+    sourceDepth: { near: 0.1, far: 0.11 },
+    imageRectHeight: 1.47,
+    captureFovDeg: 50,
+  });
+  assert.ok(macro > 0 && macro < 2, `expected a shallow uniform-scale span, got ${macro}`);
+
+  assert.equal(estimateUniformScaleDepthSpan({ sourceDepth: null, imageRectHeight: 1, captureFovDeg: 50 }), null);
+  assert.equal(estimateUniformScaleDepthSpan({
+    sourceDepth: { near: 2, far: 10 }, imageRectHeight: 1, captureFovDeg: null,
+  }), null);
 });

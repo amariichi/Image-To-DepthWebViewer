@@ -135,11 +135,12 @@ def validate_manifest(raw_manifest: str) -> dict[str, Any]:
 
     if "depthSpan" in manifest:
         depth_span = _finite_number(manifest["depthSpan"], "manifest.depthSpan")
-        # One world unit is half the virtual screen height, so a span of 2 is a
-        # relief as deep as the screen is tall. Anything beyond that cannot be
-        # viewed comfortably at a normal holding distance.
-        if not 0.0 < depth_span <= 2.0:
-            raise ValueError("manifest.depthSpan must be greater than 0 and at most 2")
+        # One world unit is half the virtual screen height. A monocular
+        # head-tracked display has no vergence/accommodation conflict, so it can
+        # carry far more depth than a stereo display; the ceiling only has to
+        # stop a value that would break the projection.
+        if not 0.0 < depth_span <= 8.0:
+            raise ValueError("manifest.depthSpan must be greater than 0 and at most 8")
         manifest["depthSpan"] = depth_span
 
     if "disparityBlend" in manifest:

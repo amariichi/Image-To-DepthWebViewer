@@ -5,6 +5,7 @@ import {
   MOBILE_PRESENTATION_DEFAULTS,
   createMobileSceneManifest,
   fetchPublishedScenePair,
+  MAX_MOBILE_DEPTH_SPAN,
   mobileDepthSpanForMagnification,
   publishMobileScene,
 } from '../webapp/src/mobile-scene-client.js';
@@ -38,7 +39,10 @@ test('creates a presentation-only schema v1 mobile manifest', () => {
 test('maps desktop depth magnification to a bounded mobile relief span', () => {
   assert.equal(mobileDepthSpanForMagnification(0.5), 1);
   assert.equal(mobileDepthSpanForMagnification(0.1), 0.2);
-  assert.equal(mobileDepthSpanForMagnification(100), 1.8);
+  // The ceiling sits well above the miniature default so a real device can be
+  // used to compare the presentation against plain uniform scaling, which needs
+  // a far deeper relief for a scene with a large depth ratio.
+  assert.equal(mobileDepthSpanForMagnification(100), MAX_MOBILE_DEPTH_SPAN);
 });
 
 

@@ -11,6 +11,7 @@ import {
   constrainReliefBehindScreen,
   createReliefInteractionMatrix,
   createMobileReliefScene,
+  estimateUniformScaleDepthSpan,
 } from './mobile-relief.js';
 import {
   DEFAULT_VIEWING_DISTANCE_MM,
@@ -116,6 +117,15 @@ function updateDebugReadout() {
   if (!debugTracking) return;
   const pose = state.eyePose;
   const metrics = tracker.getMetrics();
+  // What the relief thickness would be with no depth remapping at all, only a
+  // uniform scale, which is how the desktop and Looking Glass paths present the
+  // same mesh. Comparing the two numbers shows how much this scene is being
+  // compressed to keep it a miniature just behind the glass.
+  const uniformSpan = state.scene ? estimateUniformScaleDepthSpan({
+    sourceDepth: state.scene.sourceDepth,
+    imageRectHeight: state.scene.imageRect?.height,
+    captureFovDeg: state.manifest?.captureFovDeg,
+  }) : null;
   const poseLine = pose
     ? `eye  x ${pose.x.toFixed(3)}  y ${pose.y.toFixed(3)}  z ${pose.z.toFixed(3)}`
     : 'eye  awaiting calibration';
@@ -130,7 +140,7 @@ function updateDebugReadout() {
     `horizontal camera flip ${trackingMirrorX ? 'on' : 'off'}  ${metrics.metricAvailable ? 'metric head pose' : `ratio fallback gain ${trackingXyGain.toFixed(3)}`}`,
     `screen ${screenMetrics.label} (${screenMetrics.source})  ${(state.geometry?.screenHeightMm ?? 0).toFixed(0)} mm tall  1 unit ${(state.geometry?.worldUnitMm ?? 0).toFixed(1)} mm`,
     `viewing ${viewingDistanceMm.toFixed(0)} mm  eyeZ ${(state.geometry?.baselineEyeZ ?? 0).toFixed(2)}  fov ${(state.geometry?.verticalFovDeg ?? 0).toFixed(1)}°  head ${metrics.headDistanceMm ? `${metrics.headDistanceMm.toFixed(0)} mm` : '—'}`,
-    `depth span ${state.depthSpan.toFixed(3)}  disparity blend ${state.disparityBlend.toFixed(2)}`,
+    `depth span ${state.depthSpan.toFixed(2)}  disparity blend ${state.disparityBlend.toFixed(2)}  uniform-scale span ${uniformSpan === null ? '—' : uniformSpan.toFixed(1)}`,
   ].join('\n');
 }
 
@@ -222,7 +232,6 @@ function computeHeadCoupledMatrices(scene, interaction, eyePose) {
     y: 0,
     z: currentBaselineEyeZ(),
   };
-  const near = 0.05;
   const pivotZ = scene.frontZ ?? 0;
   // Pinch magnifies the miniature, so relief depth grows with it up to a bound
   // set by the viewer's real distance. Freezing depth would flatten the model
@@ -237,7 +246,12 @@ function computeHeadCoupledMatrices(scene, interaction, eyePose) {
     bounds: scene.bounds,
     modelMatrix: touchTransform,
   });
-  const far = Math.max(10, eye.z - safeModel.transformedBounds.min[2] + 2);
+  // No geometry is ever allowed in front of the glass, so nothing can be nearer
+  // than the eye's own distance. Pushing the near plane out accordingly keeps
+  // depth precision usable even when the relief is set several screen heights
+  // deep for comparison against plain uniform scaling.
+  const near = Math.max(0.05, (eye.z - safeModel.transformedBounds.max[2]) * 0.5);
+  const far = Math.max(near * 4, eye.z - safeModel.transformedBounds.min[2] + 2);
   const { projectionMatrix } = computeOffAxisProjection({
     eye,
     screenHalfWidth: screen.halfWidth,

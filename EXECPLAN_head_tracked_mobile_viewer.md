@@ -48,6 +48,8 @@ The feature is successful when a user loads or generates an RGBDE scene at `http
 - [x] (2026-08-19) Confirmed the desktop editor is unchanged: `Generate Depth`, `Save RGBDE`, `Save glTF`, `Publish to Mobile`, and the VR and Looking Glass entry controls are all present, mono and side-by-side switching both report WebGL error 0, and the only console errors are the unrelated port-8000 depth backend and `favicon.ico`.
 - [x] (2026-08-19) Raised the projection's eye-distance ceiling from `10` to `16` world units. Now that eye distance is measured rather than assumed, holding a phone at arm's length already exceeds the old ceiling, which would have silently discarded a correct measurement.
 - [x] (2026-08-19) Ran 77 JavaScript tests, 17 Python tests, syntax checks over 22 JavaScript files, ESLint, and `git diff --check`; all passed.
+- [x] (2026-08-19) Corrected a mistaken account of why the mobile path differs from the desktop and Looking Glass paths. A perspective projection already compresses distance by `1 / d` on its own, so uniform scaling with no depth remapping is a legitimate presentation and is what those paths use. The real defect in the earlier build was remapping depth *linearly* into a very small span, which destroyed the compression the projection would have performed. Recorded the numerical comparison in `Surprises & Discoveries`.
+- [x] (2026-08-19) Raised the relief span ceiling from `1.8` to `8` in the manifest, the relay, and the debug slider, pushed the near plane out in proportion so depth precision survives a deep relief, and added `estimateUniformScaleDepthSpan()` plus a debug readout showing how deep the same scene would be with no remapping at all.
 - [ ] Settle the three remaining perceptual variables on the user's real iPhone 17 and iPad mini using the `?debug=1` sliders, then fold the chosen values into the defaults. Verify the fourth-pass behavior: iPhone Chrome direction is natural, Safari motion is approximately half the original amplitude, the newly republished optimized scene loads in iPad Chrome, pinch magnifies without producing crescent-shaped foreground distortion, and a near subject in a deep outdoor scene now has visible relief.
 
 ## Surprises & Discoveries
@@ -114,6 +116,18 @@ The feature is successful when a user loads or generates an RGBDE scene at `http
 
 - Observation: The initial view reproduces the source image exactly, and that property is independent of the depth span and the depth mapping.
   Evidence: Projecting `S * (E0z - z) / E0z` from `E0` onto the plane `z = 0` gives `S` for every `z`. Both the relief span and the disparity blend may therefore be changed freely without disturbing what the viewer sees before moving.
+
+- Observation: A perspective projection already performs the depth compression that the disparity mapping was introduced to provide, so reshaping the model is a choice rather than a necessity. The earlier build's defect was the opposite of what it appeared: not a missing remap, but a linear remap that destroyed the projection's own behaviour.
+  Evidence: The motion parallax of a point `D` behind the glass viewed from eye distance `E` is proportional to `D / (E + D)`, which saturates at `1` as `D` grows. For a coastal portrait with a subject at 2 m and a horizon at 10 km on an iPhone 17, three presentations give: uniform scaling with no remap, subject 4.89 percent and horizon 99.9 percent; disparity mapping at span 1.0, subject 2.75 percent and horizon 17.9 percent; the previous linear mapping at span 0.125, subject 0.00 percent and horizon 2.65 percent. The current mapping therefore lands within the same order as plain uniform scaling for the near subject, and differs mainly by compressing the far field about sixfold.
+
+- Observation: A stereoscopic display obtains the same `1 / d` allocation for free, which is why the desktop and Looking Glass paths never needed a depth remap.
+  Evidence: Binocular disparity for a camera pair separated by `b` converged at `f` is proportional to `b * (1 / f - 1 / d)`, which is linear in `1 / d` by definition. The Looking Glass path also has its depth budget chosen implicitly by depth of field, because content far from the focal plane simply goes soft.
+
+- Observation: The genuine difference between this viewer and a stereoscopic display is monocular versus binocular presentation, not any missing degree of freedom.
+  Evidence: An ordinary panel shows both eyes the same image, so binocular disparity reports a flat surface at the same time as motion parallax reports depth, and the two cues conflict. A head-tracked USB camera on a desktop monitor has exactly the same limitation; it is easier only because a larger screen subtends a wider angle and the head can move further. Conversely, a monocular display has no vergence/accommodation conflict, so it can carry considerably more depth than a stereo display before becoming uncomfortable.
+
+- Observation: A uniformly scaled miniature and a relief that sits just behind the glass are incompatible for a scene with a large depth ratio.
+  Evidence: Scaling the same coastal portrait uniformly to fit the screen puts the horizon roughly 7,900 world units behind the glass, against a virtual screen two units tall. Bounding the relief to a miniature therefore requires non-uniform depth compression by definition, and the choice of compression curve is exactly what the disparity blend controls.
 
 ## Decision Log
 
@@ -200,6 +214,10 @@ The feature is successful when a user loads or generates an RGBDE scene at `http
 - Decision: Keep the model square-on to the glass and never rotate it toward the viewer.
   Rationale: The user specified that the model's orientation must not change and that only the vanishing point should follow the viewer. The off-axis projection already places the vanishing point of depth-parallel lines directly under the eye, so no geometry change is required; what was missing was enough depth and enough tracking amplitude for that motion to be visible.
   Date/Author: 2026-08-19 / Claude, prompted by explicit user direction
+
+- Decision: Raise the relief span ceiling far above the miniature default and report the uniform-scale equivalent, rather than assuming the bounded presentation is correct.
+  Rationale: Uniform scaling is a legitimate presentation that the desktop and Looking Glass paths already use successfully, and a monocular display can carry much more depth than a stereo one. Which of the two the viewer should prefer is a perceptual question that only a real device can answer, so both ends of the range must be reachable and the difference must be visible in the debug readout.
+  Date/Author: 2026-08-19 / Claude, prompted by the user's Looking Glass Go comparison
 
 - Decision: Continue without DeviceOrientation fusion or a full per-eye renderer in this milestone and document the cyclopean limitation.
   Rationale: Motion sensors add permission, calibration, and browser-coordinate complexity, while a normal panel cannot emit separate views to both eyes. Strong Z damping is a safe comfort correction now; richer 6-DoF/device-pose fusion belongs in a separately tested milestone.

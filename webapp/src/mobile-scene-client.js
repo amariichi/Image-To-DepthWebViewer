@@ -16,9 +16,16 @@ export const MOBILE_PRESENTATION_DEFAULTS = Object.freeze({
   disparityBlend: 1,
 });
 
+// The ceiling is deliberately far above the "miniature just behind the glass"
+// default. A monocular head-tracked display has no vergence/accommodation
+// conflict, so unlike a stereo display it can carry a great deal more depth,
+// and a deep setting is how the presentation is compared against plain uniform
+// scaling on a real device.
+export const MAX_MOBILE_DEPTH_SPAN = 8;
+
 export function mobileDepthSpanForMagnification(magnification) {
   const value = Number.isFinite(magnification) ? magnification : 0.5;
-  return Math.min(Math.max(value * 2, 0.2), 1.8);
+  return Math.min(Math.max(value * 2, 0.2), MAX_MOBILE_DEPTH_SPAN);
 }
 
 export function createMobileSceneManifest({
