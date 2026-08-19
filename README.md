@@ -50,6 +50,27 @@ This repository now ships a two-part toolchain: a WebGL viewer in `webapp/` and 
    - **Depth Magnification**, **Depth Mode**, **Log Power**, **Far Crop Distance**, and **Model Z Offset** adjust depth shaping, clipping, and placement. Mouse wheel zooms, left-drag rotates, right-drag pans, and double-click resets the view.
    - **Enter VR**, **Enter Looking Glass**, and **Show XR hints** are described in the WebXR section below. Running the backend elsewhere? Set `window.__RGBDE_API_BASE__ = 'http://host:port'` before loading, or adjust `API_BASE` in `webapp/src/app.js`.
 
+### Head-tracked mobile viewer
+
+The desktop editor can publish its current baked scene to a separate, touch-friendly viewer for iPhone and iPad:
+
+1. Open the editor at `http://localhost:5173/`, load or generate an RGBDE scene, finish the reconstruction/depth adjustments, and press **Publish to Mobile**.
+2. On the phone or tablet, open the same frontend host with `/viewer.html` appended—for example, `https://your-frontend-address/viewer.html`. Camera access requires a secure context. `http://localhost` is allowed on the same device, but an ordinary `http://` LAN address generally is not; use an HTTPS reverse proxy or your existing trusted HTTPS mapping to port 5173.
+3. Press **Start 3D**, hold the device steady while the centered pose calibrates, then move your head to look around the baked scene. **Recenter** repeats the short calibration without reloading the model. Landscape is recommended for the widest tracked-window effect. Current iPhone testing found that Safari and iOS Chrome need the same horizontal correction, so both now start in that direction. If a device still runs backwards, press **Flip L/R**; that choice is saved in the browser. Safari uses half the previous XY strength (`0.325`), while iOS Chrome retains `0.65` because its observed motion was already much weaker.
+4. One-finger drag rotates within ±30°. A two-finger pinch zooms only the image plane (X/Y) and does not multiply relief thickness; moving two fingers together pans. Touch remains available when camera permission is denied or tracking is stopped.
+
+Front-camera frames and face landmarks are processed locally in the mobile browser and are never published to the PC relay. The viewer does not request gyroscope, DeviceOrientation, or DeviceMotion access. It downloads the pinned MediaPipe Tasks Vision runtime/model on first use, but does not upload camera data to that provider. Add `?debug=1` to the viewer URL to show the local camera preview, eye pose, render/inference cadence, camera resolution, and first-pose latency.
+
+The mobile projection is intentionally separate from the desktop, SBS, WebXR, and Looking Glass render paths. The published GLB already contains the desktop depth adjustments. On mobile, its baked depth becomes a bounded, screen-fitted relief: UVs define the image rectangle, the nearest sample is anchored to the glass plane, and all other samples stay behind it. This prevents very distant sky or background samples from shrinking the foreground into the tip of a large pyramid. **Depth Magnification** controls the relief span at publish time; the default span is now `0.125` virtual units (half the previous value), with a bounded range of `0.025`–`0.225`.
+
+The off-axis projection uses a cyclopean eye at the midpoint between the detected eyes. For eye distance `E`, a point `D` behind the glass projects as `x_screen = X × E / (E + D)`: a point on the glass stays fixed when the face approaches, while a farther point moves slightly toward the image center. Forward/backward face response is limited to 10% of the raw apparent-eye-width estimate because phone tilt and head yaw can also change apparent eye width. A normal phone or tablet cannot show a separate correct perspective to each physical eye, so close, strongly tilted, two-eye viewing cannot be fully binocular-correct. The shallow relief and damped Z response deliberately favor a stable miniature-behind-glass effect; viewing roughly square-on or briefly closing one eye gives the most geometrically consistent result.
+
+**Publish to Mobile** creates a memory-bounded mobile asset rather than sending the full desktop export. It resamples the grid to at most 65,535 vertices, uses compact 16-bit indices, omits normals that the unlit mobile renderer does not consume, and limits the texture to 2048 pixels on either side and two million pixels total. Normal **Save glTF** exports keep their original mesh, normals, 32-bit indices, and texture behavior. This separation avoids iPad Chrome running out of tab memory while decoding the scene.
+
+Eye distance is relative and normalized rather than a metric physical-screen calibration. The viewer does not request device orientation, so it cannot independently distinguish a tilted phone from every combination of face translation and head rotation. Screen rotation cancels any active touch contacts, rebuilds the relief for the new aspect ratio, and requests recentering while preserving the accumulated touch pose.
+
+The port-5173 relay keeps only the latest published scene in memory. Restarting the frontend clears it; press **Publish to Mobile** again. Publishing a new scene replaces the current revision and open viewers pick it up automatically.
+
 ### WebXR / XR playback
 - The control panel now includes **Enter VR** and **Enter Looking Glass** buttons (requires a WebXR-enabled Chromium-based browser on HTTPS/localhost).
 - **PC-tethered OpenXR headsets** (Meta Quest via Link, Valve Index, HTC Vive, Varjo, HP Reverb G2, etc.): launch the vendor’s OpenXR runtime (Meta Quest Link, SteamVR, Windows Mixed Reality, Varjo Base, …), open the viewer in Chrome/Edge on the host PC, then click *Enter VR*. Ending the session returns to the standard canvas.
@@ -62,16 +83,21 @@ This repository now ships a two-part toolchain: a WebGL viewer in `webapp/` and 
 
 ### Repository Layout
 - `webapp/index.html` – entry point and UI shell.
+- `webapp/viewer.html` – head-tracked mobile viewer and touch-first startup shell.
 - `webapp/perf-harness.html` – lightweight local benchmark page for RGBDE decode, preprocessing, mesh generation, and optional backend round-trip timing.
 - `webapp/src/geometry.js` – RGBDE decoding, depth preprocessing, mesh density selection, and pinhole projection.
 - `webapp/src/rendering.js` – WebGL2 renderer, shader setup, and camera math.
 - `webapp/src/app.js` – event wiring, UI bindings, and interaction logic.
 - `webapp/src/gltf-exporter.js` – binary glTF (`.glb`) writer used by the *Save glTF* workflow.
+- `webapp/src/mobile-viewer.js` – mobile scene loading, touch presentation, camera tracking, and off-axis projection wiring.
+- `webapp/src/mobile-relief.js` – screen-fitted, behind-glass relief generation for published scenes.
+- `webapp/src/mobile-publish-mesh.js` – mobile-only grid and texture budgets used during publish.
 - `webapp/src/webxr.js` – WebXR session orchestration for VR and Looking Glass.
 
 ### Third-Party Resources
 - **Apple Depth Pro** – Pulled via `scripts/bootstrap.py` into `third_party/ml-depth-pro`. Usage is governed by Apple’s sample code license (`third_party/ml-depth-pro/LICENSE`). Installers must agree to that license before running the backend.
 - **Looking Glass WebXR Polyfill** – Loaded at runtime from the official CDN (`@lookingglass/webxr`). The package is not bundled with this repo; when used, it remains subject to Looking Glass Factory’s license terms (see the package’s `LICENSE` on npm).
+- **MediaPipe Tasks Vision / Face Landmarker** – The mobile viewer loads pinned Tasks Vision 1.0.0 code and the float16 Face Landmarker v1 model at runtime. Inference stays in the browser; camera frames and landmarks are not sent to the scene relay.
 - These components are external dependencies and are not redistributed here. If you plan to bundle them, ensure your distribution complies with each provider’s license terms (including any redistribution restrictions).
 
 
@@ -120,6 +146,27 @@ This repository now ships a two-part toolchain: a WebGL viewer in `webapp/` and 
    - **Depth Magnification**、**Depth Mode**、**Log Power**、**Far Crop Distance**、**Model Z Offset** はデプス変形、クロップ、配置を調整します。マウスホイールでズーム、左ドラッグで回転、右ドラッグで平行移動、ダブルクリックでリセットします。
    - **Enter VR**、**Enter Looking Glass**、**Show XR hints** は下の WebXR セクションで説明しています。バックエンドを別ホスト／別ポートで稼働させる場合は、ページ読込前に `window.__RGBDE_API_BASE__ = "http://host:port"` を設定するか、`webapp/src/app.js` の `API_BASE` を編集してください。
 
+### ヘッドトラッキング対応モバイルビューア
+
+PC エディタで調整したシーンを、iPhone / iPad 向けのタッチ対応ビューアへ明示的に Publish できます。
+
+1. PC で `http://localhost:5173/` を開き、RGBDE を読み込むか生成して、再構成・デプス調整を終えてから **Publish to Mobile** を押します。
+2. スマホ／タブレットでは、同じフロントエンドホストの末尾に `/viewer.html` を付けて開きます（例: `https://your-frontend-address/viewer.html`）。カメラにはセキュアコンテキストが必要です。同じ端末上の `http://localhost` は例外ですが、通常の LAN 内 `http://` アドレスでは許可されないため、ポート 5173 に向けた HTTPS リバースプロキシまたは既存の信頼済み HTTPS マッピングを使用してください。
+3. **Start 3D** を押し、正面姿勢の短いキャリブレーション中は端末を安定させます。その後、頭を動かすと焼き込み済みシーンの視点が変化します。**Recenter** はモデルを再読込せずにキャリブレーションだけをやり直します。今回の iPhone 実機確認では Safari と iOS Chrome に同じ左右補正が必要だったため、両方を同じ初期方向にしました。端末によってまだ逆なら **Flip L/R** を押してください。この選択はブラウザ内に保存されます。Safari のXY反応は従来の半分 (`0.325`)、もともと動きがかなり弱かった iOS Chrome は `0.65` を維持します。Tracked Window の効果を広く感じるには横画面がおすすめです。
+4. 1本指ドラッグは ±30° 以内の回転です。2本指ピンチは画像面のX/Yだけを拡大し、reliefの厚みは増やしません。2本指を一緒に動かす操作は平行移動です。カメラを拒否／停止してもタッチ操作は使えます。
+
+前面カメラ映像と顔ランドマークはモバイルブラウザ内だけで処理され、PC のシーン relay には送信されません。ジャイロ、DeviceOrientation、DeviceMotion の許可も要求しません。初回は固定バージョンの MediaPipe Tasks Vision とモデルをダウンロードしますが、カメラデータをその提供元へアップロードする処理はありません。URL に `?debug=1` を付けると、端末内カメラプレビュー、eye pose、描画／推論 cadence、実カメラ解像度、最初の pose までの時間を確認できます。
+
+モバイル投影は Desktop / SBS / WebXR / Looking Glass の描画経路から分離されています。公開 GLB には PC 側のデプス調整がすでに焼き込まれています。モバイルではそのデプスを、画面内に収まる有限厚の relief に変換します。UV が画像枠を決め、最近点をガラス面に固定し、残りをすべて奥側に配置するため、空などの超遠景によって手前が四角錐の頂点のように小さくなることを防ぎます。公開時の **Depth Magnification** が relief の厚みに反映されます。標準厚は従来の半分の `0.125`、範囲は `0.025`〜`0.225` です。
+
+off-axis 投影は左右の目の中点にある仮想的な単眼（cyclopean eye）を使います。ガラスから眼までの距離を `E`、ガラスより奥の距離を `D` とすると、点は `x_screen = X × E / (E + D)` に投影されます。このため顔を近づけてもガラス面の点は不変で、遠い点だけが僅かに画像中央へ縮むのが本来の挙動です。端末を傾けたり顔を横に向けたりしても見かけの目幅が変わるため、目幅から推定した前後移動は生値の10%だけ反映します。通常のスマホ／タブレットは左右の物理的な目へ別々の正しい像を同時表示できないので、近距離・強い傾斜・両眼視を完全な立体として一致させることはできません。浅い relief と弱いZ応答は、ガラスの向こうのミニチュアを安定して見せることを優先しています。画面を概ね正対させるか、片目で確認すると幾何学的には最も整合します。
+
+**Publish to Mobile** は Desktop 用の完全な glTF とは別に、メモリ上限を設けたモバイル専用データを作ります。グリッドは最大65,535頂点に再サンプリングし、16bit indexを使い、モバイルの unlit 描画で使わない法線を省き、テクスチャは一辺2048px以下・合計200万画素以下にします。通常の **Save glTF** は元のメッシュ、法線、32bit index、テクスチャの挙動を維持します。この分離により、iPad Chrome がシーン展開中にタブメモリを使い切る可能性を抑えます。
+
+眼の距離推定は物理単位の画面キャリブレーションではなく相対・正規化値です。DeviceOrientation は要求しないため、傾けた端末と顔の平行移動／回転の全組み合わせを独立に識別することはできません。画面回転時は進行中のタッチ接触を解除し、新しい縦横比に合わせて relief を組み直し、積み上げたタッチ姿勢を保ったまま Recenter を行います。
+
+ポート 5173 の relay が保持するのは最新の1シーンだけで、メモリ内保存です。フロントエンドを再起動した場合は **Publish to Mobile** を再度押してください。別シーンを Publish すると revision が置き換わり、開いているモバイルビューアも自動更新します。
+
 ### WebXR / XR 再生
 - コントロールパネルに **Enter VR** / **Enter Looking Glass** ボタンを追加しました（WebXR 対応の Chromium 系ブラウザ + HTTPS/localhost が必要）。
 - **PC 接続型 OpenXR ヘッドセット**（Meta Quest + Link、Valve Index、HTC Vive、Varjo、HP Reverb G2 など）: 各ベンダーの OpenXR ランタイム（Quest Link、SteamVR、Windows Mixed Reality、Varjo Base など）を起動し、PC の Chrome / Edge でビューアを開いて *Enter VR* を押すと没入セッションが開始します。終了すると通常表示に戻ります。
@@ -132,14 +179,19 @@ This repository now ships a two-part toolchain: a WebGL viewer in `webapp/` and 
 
 ### ディレクトリ構成
 - `webapp/index.html` – 画面レイアウトと UI。
+- `webapp/viewer.html` – ヘッドトラッキング／タッチ対応モバイルビューア。
 - `webapp/perf-harness.html` – RGBDE デコード、前処理、メッシュ生成、必要に応じてバックエンド往復時間を確認するための軽量なローカル計測ページ。
 - `webapp/src/geometry.js` – RGBDE の展開、デプス前処理、メッシュ分割と投影ロジック。
 - `webapp/src/rendering.js` – WebGL2 レンダラーとカメラ行列。
 - `webapp/src/app.js` – UI イベントとインタラクション制御。
 - `webapp/src/gltf-exporter.js` – *Save glTF* で使用する glTF (`.glb`) エクスポータ。
+- `webapp/src/mobile-viewer.js` – モバイルシーン読込、タッチ表示 transform、カメラ追跡、off-axis 投影の接続。
+- `webapp/src/mobile-relief.js` – 公開シーンを画面内・ガラス面より奥へ収める relief 生成。
+- `webapp/src/mobile-publish-mesh.js` – Publish時にだけ使うモバイル用グリッド／テクスチャ上限。
 - `webapp/src/webxr.js` – VR / Looking Glass 向け WebXR セッション管理。
 
 ### サードパーティリソース
 - **Apple Depth Pro** – `scripts/bootstrap.py` 実行時に `third_party/ml-depth-pro` として取得されます。利用には Apple のサンプルコードライセンス (`third_party/ml-depth-pro/LICENSE`) への同意が必要です。
 - **Looking Glass WebXR Polyfill** – 実行時に CDN (`@lookingglass/webxr`) から読み込みます。このリポジトリには同梱していませんが、利用時は Looking Glass Factory のライセンス（パッケージの `LICENSE` 参照）に従ってください。
+- **MediaPipe Tasks Vision / Face Landmarker** – モバイルビューアが固定バージョンの Tasks Vision 1.0.0 と float16 Face Landmarker v1 モデルを実行時に読み込みます。推論はブラウザ内で完結し、カメラ映像やランドマークはシーン relay へ送信されません。
 - これら外部コンポーネントを成果物に含める場合は、各提供元のライセンス条件（再配布可否や同梱義務を含む）に従ってください。

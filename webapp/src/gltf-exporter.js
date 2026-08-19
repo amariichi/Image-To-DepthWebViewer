@@ -7,11 +7,23 @@ function toFloat32(array) {
   return new Float32Array(array);
 }
 
-function toUint32(array) {
+function toIndexArray(array) {
+  if (array instanceof Uint8Array) {
+    return new Uint8Array(array);
+  }
+  if (array instanceof Uint16Array) {
+    return new Uint16Array(array);
+  }
   if (array instanceof Uint32Array) {
     return new Uint32Array(array);
   }
   return new Uint32Array(array);
+}
+
+function indexComponentType(indices) {
+  if (indices instanceof Uint8Array) return 5121;
+  if (indices instanceof Uint16Array) return 5123;
+  return 5125;
 }
 
 function computeVertexNormals(positions, indices) {
@@ -229,6 +241,7 @@ export async function createGlbBlob(options) {
     modelMatrix,
     meshName = 'DepthMesh',
     includeUVs = true,
+    includeNormals = true,
     texture = null,
   } = options || {};
 
@@ -239,8 +252,8 @@ export async function createGlbBlob(options) {
   const name = meshName && meshName.trim() ? meshName : 'DepthMesh';
 
   const positions = toFloat32(mesh.positions);
-  const indices = toUint32(mesh.indices);
-  const normals = computeVertexNormals(positions, indices);
+  const indices = toIndexArray(mesh.indices);
+  const normals = includeNormals ? computeVertexNormals(positions, indices) : null;
   const uvs = includeUVs && mesh.uvs ? new Float32Array(mesh.uvs) : null;
   const { min, max } = computeBounds(positions);
 
@@ -251,7 +264,7 @@ export async function createGlbBlob(options) {
   const INDEX_TARGET = 34963;
 
   const positionViewIndex = binary.append(positions, { target: POSITION_TARGET });
-  const normalViewIndex = binary.append(normals, { target: POSITION_TARGET });
+  const normalViewIndex = normals ? binary.append(normals, { target: POSITION_TARGET }) : null;
   const uvViewIndex = uvs ? binary.append(uvs, { target: POSITION_TARGET }) : null;
   const indexViewIndex = binary.append(indices, { target: INDEX_TARGET });
 
@@ -280,13 +293,15 @@ export async function createGlbBlob(options) {
     max,
   });
 
-  accessorIndices.normal = accessors.length;
-  accessors.push({
-    bufferView: normalViewIndex,
-    componentType: 5126,
-    count: normals.length / 3,
-    type: 'VEC3',
-  });
+  if (normalViewIndex !== null) {
+    accessorIndices.normal = accessors.length;
+    accessors.push({
+      bufferView: normalViewIndex,
+      componentType: 5126,
+      count: normals.length / 3,
+      type: 'VEC3',
+    });
+  }
 
   if (uvViewIndex !== null) {
     accessorIndices.uv = accessors.length;
@@ -301,15 +316,17 @@ export async function createGlbBlob(options) {
   accessorIndices.indices = accessors.length;
   accessors.push({
     bufferView: indexViewIndex,
-    componentType: 5125,
+    componentType: indexComponentType(indices),
     count: indices.length,
     type: 'SCALAR',
   });
 
   const attributes = {
     POSITION: accessorIndices.position,
-    NORMAL: accessorIndices.normal,
   };
+  if (normalViewIndex !== null) {
+    attributes.NORMAL = accessorIndices.normal;
+  }
   if (uvViewIndex !== null) {
     attributes.TEXCOORD_0 = accessorIndices.uv;
   }

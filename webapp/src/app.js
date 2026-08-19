@@ -9,11 +9,21 @@ import { createRenderer, mat4 } from './rendering.js';
 import WebXRManager from './webxr.js';
 import XRHintOverlay from './xr-hints.js';
 import { createGlbBlob } from './gltf-exporter.js';
+import {
+  createMobileSceneManifest,
+  mobileDepthSpanForMagnification,
+  publishMobileScene,
+} from './mobile-scene-client.js';
+import {
+  createMobilePublishMesh,
+  fitMobileTextureSize,
+} from './mobile-publish-mesh.js';
 
 const sourceInput = document.getElementById('source-input');
 const generateButton = document.getElementById('generate-depth');
 const saveButton = document.getElementById('save-rgbde');
 const saveGltfButton = document.getElementById('save-gltf');
+const publishMobileButton = document.getElementById('publish-mobile');
 const canvas = document.getElementById('glCanvas');
 const toggleButton = document.getElementById('toggle-ui');
 const mirrorToggleButton = document.getElementById('toggle-ui-mirror');
@@ -273,6 +283,9 @@ function init() {
   if (saveGltfButton) {
     saveGltfButton.disabled = true;
   }
+  if (publishMobileButton) {
+    publishMobileButton.disabled = true;
+  }
   generateButton.disabled = false;
   generateButton.textContent = GENERATE_LABEL_DEFAULT;
   updateSaveButtonState();
@@ -446,9 +459,14 @@ function updateSaveButtonState() {
 }
 
 function updateGlbButtonState() {
-  if (!saveGltfButton) return;
   const meshReady = Boolean(state.mesh && state.rgbde);
-  saveGltfButton.disabled = !meshReady;
+  if (saveGltfButton) {
+    saveGltfButton.disabled = !meshReady;
+  }
+  if (publishMobileButton) {
+    publishMobileButton.disabled = !meshReady;
+  }
+  syncMirrorControls();
 }
 
 function saveCurrentAsset() {
@@ -472,38 +490,72 @@ function getExportBaseName() {
   return 'depth_export';
 }
 
-async function saveCurrentMeshAsGlb() {
+function createMobileTextureImageData(imageData) {
+  const fitted = fitMobileTextureSize(imageData.width, imageData.height);
+  if (fitted.width === imageData.width && fitted.height === imageData.height) return imageData;
+  const sourceCanvas = document.createElement('canvas');
+  sourceCanvas.width = imageData.width;
+  sourceCanvas.height = imageData.height;
+  const sourceContext = sourceCanvas.getContext('2d');
+  const targetCanvas = document.createElement('canvas');
+  targetCanvas.width = fitted.width;
+  targetCanvas.height = fitted.height;
+  const targetContext = targetCanvas.getContext('2d');
+  if (!sourceContext || !targetContext) {
+    throw new Error('Canvas 2D is unavailable for mobile texture optimization.');
+  }
+  sourceContext.putImageData(imageData, 0, 0);
+  targetContext.drawImage(sourceCanvas, 0, 0, fitted.width, fitted.height);
+  return targetContext.getImageData(0, 0, fitted.width, fitted.height);
+}
+
+async function createCurrentGlb({ modelMatrix, mobileOptimized = false } = {}) {
   if (!state.mesh) {
-    showStatus('No mesh available to export.', 3000);
-    return;
+    throw new Error('No mesh available to export.');
   }
   if (!state.rgbde || !state.rgbde.textureImage) {
-    showStatus('Texture data is unavailable for export.', 4000);
-    return;
+    throw new Error('Texture data is unavailable for export.');
   }
+  const baseName = getExportBaseName();
+  const textureFileName = `${baseName || 'depth_export'}.png`;
+  const deformedPositions = createDeformedPositions(state.mesh, state.options);
+  const mesh = mobileOptimized
+    ? createMobilePublishMesh({ ...state.mesh, positions: deformedPositions })
+    : { ...state.mesh, positions: deformedPositions };
+  const textureImage = mobileOptimized
+    ? createMobileTextureImageData(state.rgbde.textureImage)
+    : state.rgbde.textureImage;
+  const blob = await createGlbBlob({
+    mesh,
+    modelMatrix,
+    meshName: baseName,
+    includeUVs: Boolean(mesh.uvs),
+    includeNormals: !mobileOptimized,
+    texture: {
+      imageData: textureImage,
+      fileName: textureFileName,
+    },
+  });
+  return {
+    baseName,
+    blob,
+    filename: `${baseName || 'depth_export'}.glb`,
+    profile: {
+      vertexCount: mesh.positions.length / 3,
+      textureWidth: textureImage.width,
+      textureHeight: textureImage.height,
+    },
+  };
+}
+
+async function saveCurrentMeshAsGlb() {
   const buttonRestore = saveGltfButton ? saveGltfButton.disabled : null;
   if (saveGltfButton) {
     saveGltfButton.disabled = true;
   }
   try {
     showStatus('Preparing glTF export…', 0);
-    const modelMatrix = computeModelMatrix();
-    const baseName = getExportBaseName();
-    const textureFileName = `${baseName || 'depth_export'}.png`;
-    const blob = await createGlbBlob({
-      mesh: {
-        ...state.mesh,
-        positions: createDeformedPositions(state.mesh, state.options),
-      },
-      modelMatrix,
-      meshName: baseName,
-      includeUVs: Boolean(state.mesh.uvs),
-      texture: {
-        imageData: state.rgbde.textureImage,
-        fileName: textureFileName,
-      },
-    });
-    const filename = `${baseName || 'depth_export'}.glb`;
+    const { blob, filename } = await createCurrentGlb({ modelMatrix: computeModelMatrix() });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
@@ -523,6 +575,42 @@ async function saveCurrentMeshAsGlb() {
     } else if (saveGltfButton) {
       saveGltfButton.disabled = false;
     }
+  }
+}
+
+async function publishCurrentMeshToMobile() {
+  const buttonRestore = publishMobileButton ? publishMobileButton.disabled : null;
+  if (publishMobileButton) {
+    publishMobileButton.disabled = true;
+  }
+  syncMirrorControls();
+  try {
+    showStatus('Preparing mobile scene…', 0);
+    // Omitting modelMatrix keeps the GLB node transform-free. Mobile placement is
+    // computed independently from the desktop inspection camera and auto-fit state.
+    const { blob, filename, profile } = await createCurrentGlb({ mobileOptimized: true });
+    const manifest = createMobileSceneManifest({
+      sourceName: state.asset.filename,
+      depthSpan: mobileDepthSpanForMagnification(state.options.magnification),
+      // The capture field of view lets the mobile viewer report how much the
+      // relief is exaggerated relative to the scene's real proportions. It is
+      // reporting only; the presentation itself never depends on it.
+      captureFovDeg: state.meshConfig.geomFov,
+    });
+    const result = await publishMobileScene({ blob, filename, manifest });
+    showStatus(
+      `Published optimized ${filename} to mobile (revision ${result.revision}, ${profile.vertexCount.toLocaleString()} vertices, ${profile.textureWidth}×${profile.textureHeight}).`,
+      5500,
+    );
+  } catch (error) {
+    console.error(error);
+    const message = error && error.message ? error.message : 'Failed to publish mobile scene.';
+    showStatus(message, 5000);
+  } finally {
+    if (publishMobileButton && buttonRestore !== null) {
+      publishMobileButton.disabled = buttonRestore;
+    }
+    updateGlbButtonState();
   }
 }
 
@@ -753,6 +841,11 @@ function attachUIListeners() {
   if (saveGltfButton) {
     saveGltfButton.addEventListener('click', () => {
       void saveCurrentMeshAsGlb();
+    });
+  }
+  if (publishMobileButton) {
+    publishMobileButton.addEventListener('click', () => {
+      void publishCurrentMeshToMobile();
     });
   }
   toggleButton.addEventListener('click', () => {

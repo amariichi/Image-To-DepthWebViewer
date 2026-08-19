@@ -493,6 +493,23 @@ export const mat4 = {
     out[11] *= factor;
     return out;
   },
+  scaleAxes(matrix, factors) {
+    const [x, y, z] = factors;
+    const out = new Float32Array(matrix);
+    out[0] *= x;
+    out[1] *= x;
+    out[2] *= x;
+    out[3] *= x;
+    out[4] *= y;
+    out[5] *= y;
+    out[6] *= y;
+    out[7] *= y;
+    out[8] *= z;
+    out[9] *= z;
+    out[10] *= z;
+    out[11] *= z;
+    return out;
+  },
   translateInPlace(matrix, translation) {
     const [x, y, z] = translation;
     matrix[12] = matrix[0] * x + matrix[4] * y + matrix[8] * z + matrix[12];

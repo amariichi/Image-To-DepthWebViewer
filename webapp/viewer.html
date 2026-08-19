@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#080909" />
+    <title>Tracked Window — Image-to-Depth</title>
+    <link rel="stylesheet" href="./mobile-viewer.css" />
+  </head>
+  <body class="mobile-viewer" data-state="booting">
+    <main class="viewer-stage" aria-label="Head-tracked 3D viewer">
+      <canvas id="viewer-canvas" aria-label="Published 3D scene"></canvas>
+      <video id="tracking-video" class="tracking-video" playsinline muted aria-hidden="true"></video>
+      <pre id="pose-readout" class="pose-readout" aria-hidden="true"></pre>
+
+      <div id="debug-controls" class="debug-controls" aria-label="Presentation tuning">
+        <label for="debug-distance">Viewing distance <output id="debug-distance-value">350</output> mm</label>
+        <input id="debug-distance" type="range" min="150" max="900" step="10" value="350" />
+        <label for="debug-span">Relief depth <output id="debug-span-value">1.00</output></label>
+        <input id="debug-span" type="range" min="0.05" max="1.80" step="0.05" value="1" />
+        <label for="debug-blend">Disparity blend <output id="debug-blend-value">1.00</output></label>
+        <input id="debug-blend" type="range" min="0" max="1" step="0.05" value="1" />
+      </div>
+
+      <div class="reticle" aria-hidden="true">
+        <span></span>
+        <span></span>
+        <span></span>
+        <span></span>
+      </div>
+
+      <header class="viewer-header">
+        <p class="eyebrow">Image-to-Depth / Mobile</p>
+        <p id="scene-label" class="scene-label">Awaiting published scene</p>
+      </header>
+
+      <section id="startup-panel" class="startup-panel" aria-labelledby="viewer-title">
+        <p class="index">01 / TRACKED WINDOW</p>
+        <h1 id="viewer-title">Look through,<br />not at.</h1>
+        <p class="intro">Publish a mesh from the desktop editor, then use the front camera to shift the viewpoint as you move.</p>
+        <button id="start-tracking" class="primary-action" type="button" disabled>Start 3D</button>
+        <p id="viewer-status" class="viewer-status" role="status" aria-live="polite">Checking for a published scene…</p>
+        <p class="gesture-hint">1 finger · rotate&nbsp;&nbsp; 2 fingers · zoom / pan</p>
+      </section>
+
+      <nav class="viewer-controls" aria-label="Viewer controls">
+        <button id="recenter-tracking" type="button" disabled>Recenter</button>
+        <button id="flip-tracking-x" type="button">Flip L/R</button>
+        <button id="reload-scene" type="button">Reload scene</button>
+        <button id="stop-tracking" type="button" disabled>Stop camera</button>
+      </nav>
+      <p id="runtime-status" class="runtime-status" role="status" aria-live="polite">Checking for a published scene…</p>
+    </main>
+    <script type="module" src="./src/mobile-viewer.js"></script>
+  </body>
+</html>
