@@ -180,11 +180,11 @@ export class WebXRManager {
     return this.lookModulePromise;
   }
 
-  // Applied once, when the polyfill is first constructed, and never again. These
-  // values are only a starting point: framing a hologram well depends on the
-  // scene and on being able to see the result, and the Looking Glass renders its
-  // own window with its own controls, so the viewer adjusts there. Reapplying on
-  // every entry would silently undo that adjustment.
+  // These values are only a starting point: framing a hologram well depends on
+  // the scene and on being able to see the result, and the Looking Glass renders
+  // its own window with its own controls, so the viewer adjusts there. The
+  // caller decides when a reset is warranted; reapplying on every entry would
+  // silently undo whatever had just been adjusted by hand.
   applyLookingGlassConfig(config = {}) {
     const target = this.lookingGlassConfig;
     if (!target) return;
@@ -193,10 +193,11 @@ export class WebXRManager {
     }
   }
 
-  async enterLookingGlass(config = {}) {
+  async enterLookingGlass(config = {}, { resetFrame = false } = {}) {
     this.isLookingGlass = true;
     try {
       await this.ensureLookingGlassPolyfill(config);
+      if (resetFrame) this.applyLookingGlassConfig(config);
     } catch (error) {
       console.error('Looking Glass polyfill failed', error);
       this.onStatus(`Looking Glass setup failed: ${error.message || error}`);

@@ -279,6 +279,7 @@ const state = {
     lastX: 0,
     lastY: 0,
   },
+  lookingGlassFrameStale: true,
   centerZ: DEFAULT_CENTER_Z,
   initialScale: 1.0,
   autoTranslationZ: 0.0,
@@ -473,6 +474,8 @@ function setCurrentAsset(blob, sourceType) {
   state.asset.blob = blob;
   state.asset.filename = blob && blob.name ? blob.name : 'output_RGBDE.png';
   state.asset.source = sourceType;
+  // A different picture wants its own Looking Glass framing.
+  state.lookingGlassFrameStale = true;
   updateSaveButtonState();
 }
 
@@ -1817,8 +1820,18 @@ async function handleEnterVr() {
 // settled against real hardware, for example
 // `?lgTargetY=-0.5&lgTargetDiam=4`.
 const LOOKING_GLASS_CONFIG_KEYS = ['targetX', 'targetY', 'targetZ', 'targetDiam', 'fovy'];
+// The library's own default size, restated here so that resetting the frame for
+// a new picture restores every value the viewer may have moved, not just the
+// ones this project overrides.
+const LOOKING_GLASS_TARGET_DIAM = 2;
+
 function lookingGlassFrameDefaults() {
-  return { targetY: LOOKING_GLASS_TARGET_Y, targetZ: LOOKING_GLASS_TARGET_Z };
+  return {
+    targetX: 0,
+    targetY: LOOKING_GLASS_TARGET_Y,
+    targetZ: LOOKING_GLASS_TARGET_Z,
+    targetDiam: LOOKING_GLASS_TARGET_DIAM,
+  };
 }
 
 function lookingGlassConfigFromUrl() {
@@ -1835,6 +1848,11 @@ function lookingGlassConfigFromUrl() {
 
 async function handleEnterLookingGlass() {
   if (!xrManager) return;
+  // A new picture gets the starting frame back, because the right framing is
+  // strongly scene-dependent and carrying the previous one over is almost
+  // always wrong. Re-entering with the same picture keeps whatever was just
+  // adjusted in the Looking Glass window.
+  const resetFrame = state.lookingGlassFrameStale !== false;
   // Only the depth of the hologram volume generalises across scenes; two very
   // different pictures settled within 0.03 of each other on a Looking Glass Go.
   // Its height and size did not, varying by a factor of two and more, and an
@@ -1842,8 +1860,10 @@ async function handleEnterLookingGlass() {
   // values in both magnitude and sign. They are left to the URL rather than
   // guessed at.
   const overrides = { ...lookingGlassFrameDefaults(), ...lookingGlassConfigFromUrl() };
-  const success = await xrManager.enterLookingGlass(overrides);
-  if (!success) {
+  const success = await xrManager.enterLookingGlass(overrides, { resetFrame });
+  if (success) {
+    state.lookingGlassFrameStale = false;
+  } else {
     showStatus('Looking Glass session could not start.', 4000);
   }
 }
