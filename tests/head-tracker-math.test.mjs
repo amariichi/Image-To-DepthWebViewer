@@ -16,6 +16,10 @@ import {
   mapObservationToEyePose,
   observationsAreStable,
 } from '../webapp/src/head-tracker.js';
+import {
+  MAX_SUPPORTED_EYE_Z,
+  sanitizeEye,
+} from '../webapp/src/head-coupled-projection.js';
 
 
 const LEFT_IRIS = [473, 474, 475, 476, 477];
@@ -310,4 +314,30 @@ test('calibration averaging carries the metric pose only when every sample has o
     { center: { x: 100, y: 100 }, eyeDistance: 60 },
   ]);
   assert.equal(partial.metric, undefined);
+});
+
+
+test('a measured eye distance survives the projection instead of being clamped', () => {
+  // One world unit is half the physical screen height, so holding a phone at
+  // arm's length is already past the old ceiling of ten units. Clamping there
+  // would quietly discard a distance the metric tracker measured correctly.
+  const worldUnitMm = 65;
+  const calibration = {
+    center: { x: 0, y: 0 },
+    eyeDistance: 60,
+    baselineEyeZ: 4.6,
+    metric: { xMm: 0, yMm: 0, distanceMm: 300 },
+  };
+  const armsLength = mapMetricPoseToEyePose(
+    { xMm: 0, yMm: 0, distanceMm: 700 },
+    calibration,
+    { worldUnitMm },
+  );
+  assert.ok(Math.abs(armsLength.z - 700 / 65) < 1e-6);
+  assert.equal(sanitizeEye(armsLength).z, armsLength.z);
+  assert.ok(armsLength.z > 10, 'the case only matters above the old ceiling');
+
+  // The ceiling still exists; it just clears the real measurement range.
+  const absurd = sanitizeEye({ x: 0, y: 0, z: 500 });
+  assert.equal(absurd.z, MAX_SUPPORTED_EYE_Z);
 });

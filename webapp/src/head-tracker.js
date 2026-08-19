@@ -1,3 +1,5 @@
+import { MAX_SUPPORTED_EYE_Z } from './head-coupled-projection.js';
+
 export const MEDIAPIPE_TASKS_VERSION = '1.0.0';
 export const MEDIAPIPE_MODULE_URL = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MEDIAPIPE_TASKS_VERSION}/vision_bundle.mjs`;
 export const MEDIAPIPE_WASM_URL = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MEDIAPIPE_TASKS_VERSION}/wasm`;
@@ -214,7 +216,7 @@ export function mapMetricPoseToEyePose(metric, calibration, {
   minY = -2.5,
   maxY = 2.5,
   minZ = 1.2,
-  maxZ = 14,
+  maxZ = MAX_SUPPORTED_EYE_Z,
 } = {}) {
   if (!metric || !(metric.distanceMm > 0)) {
     throw new Error('A metric head position is required.');

@@ -46,7 +46,8 @@ The feature is successful when a user loads or generates an RGBDE scene at `http
 - [x] (2026-08-19) Moved the debug tuning sliders and live readings clear of the startup copy so both remain usable on a phone-sized viewport.
 - [x] (2026-08-19) Verified the whole path in a browser against the live relay: `rgbde-large.png` loaded in the desktop editor, `Publish to Mobile` produced a 249,750-vertex, 10.5 MB full build plus a 2.0 MB reduced build, and the manifest carried `depthSpan 1`, `disparityBlend 1`, `baselineEyeZ 4.5`, and `captureFovDeg 32`. The viewer reached `Scene ready` with WebGL error 0, parsed 32-bit indices and an `image/jpeg` texture, and produced a relief spanning exactly `z` in `[-1, 0]`. The device table resolved iPhone 17 to `0.16565` and iPad mini to `0.15583` millimetres per CSS pixel. Injecting a simulated out-of-memory failure on the full build made the viewer fall back and report `Scene ready (reduced build)`.
 - [x] (2026-08-19) Confirmed the desktop editor is unchanged: `Generate Depth`, `Save RGBDE`, `Save glTF`, `Publish to Mobile`, and the VR and Looking Glass entry controls are all present, mono and side-by-side switching both report WebGL error 0, and the only console errors are the unrelated port-8000 depth backend and `favicon.ico`.
-- [x] (2026-08-19) Ran 76 JavaScript tests, 17 Python tests, syntax checks over 22 JavaScript files, ESLint, and `git diff --check`; all passed.
+- [x] (2026-08-19) Raised the projection's eye-distance ceiling from `10` to `16` world units. Now that eye distance is measured rather than assumed, holding a phone at arm's length already exceeds the old ceiling, which would have silently discarded a correct measurement.
+- [x] (2026-08-19) Ran 77 JavaScript tests, 17 Python tests, syntax checks over 22 JavaScript files, ESLint, and `git diff --check`; all passed.
 - [ ] Settle the three remaining perceptual variables on the user's real iPhone 17 and iPad mini using the `?debug=1` sliders, then fold the chosen values into the defaults. Verify the fourth-pass behavior: iPhone Chrome direction is natural, Safari motion is approximately half the original amplitude, the newly republished optimized scene loads in iPad Chrome, pinch magnifies without producing crescent-shaped foreground distortion, and a near subject in a deep outdoor scene now has visible relief.
 
 ## Surprises & Discoveries
@@ -218,7 +219,7 @@ Two earlier proposals were withdrawn on explicit user direction and are recorded
 
 The validation transcript for the fourth pass was:
 
-    npm test:                     76 passed, 0 failed
+    npm test:                     77 passed, 0 failed
     Python unittest discovery:    17 passed, 0 failed
     npm run check:js:             22 files checked
     npm run lint:                 exit 0

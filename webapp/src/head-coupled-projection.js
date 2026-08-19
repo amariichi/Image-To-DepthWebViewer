@@ -21,7 +21,13 @@ export function computeVirtualScreen(aspect, screenHeight = 2) {
   };
 }
 
-export function sanitizeEye(eye, { minEyeZ = 0.2, maxEyeZ = 10 } = {}) {
+// Eye distance is now a measured quantity in world units, where one unit is
+// half the physical screen height. Holding a phone at arm's length is already
+// past 10 units, so the ceiling has to clear the range the metric tracker can
+// legitimately report rather than silently clamping it.
+export const MAX_SUPPORTED_EYE_Z = 16;
+
+export function sanitizeEye(eye, { minEyeZ = 0.2, maxEyeZ = MAX_SUPPORTED_EYE_Z } = {}) {
   const x = finiteNumber(eye?.x, 'eye.x');
   const y = finiteNumber(eye?.y, 'eye.y');
   const z = finiteNumber(eye?.z, 'eye.z');
