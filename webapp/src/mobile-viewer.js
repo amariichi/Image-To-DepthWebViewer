@@ -381,8 +381,13 @@ function computeHeadCoupledMatrices(scene, interaction, eyePose) {
   if (levelling !== 0) {
     // Rotated about the glass so the correction pivots where the picture meets
     // the screen, which is the one plane that must stay put.
+    //
+    // The sign follows from the measurement: gravity swinging toward the
+    // screen's right edge means the device was turned clockwise as the viewer
+    // sees it, and the scene must turn the other way, which is a positive
+    // rotation about +z in screen coordinates. Confirmed on hardware.
     let level = mat4.translate(mat4.identity(), [0, 0, pivotZ]);
-    level = mat4.rotateZ(level, -levelling);
+    level = mat4.rotateZ(level, levelling);
     level = mat4.translate(level, [0, 0, -pivotZ]);
     touchTransform = mat4.multiply(level, touchTransform);
   }
