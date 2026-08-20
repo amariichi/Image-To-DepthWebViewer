@@ -44,6 +44,7 @@ const status = document.getElementById('viewer-status');
 const startButton = document.getElementById('start-tracking');
 const reloadButton = document.getElementById('reload-scene');
 const recenterButton = document.getElementById('recenter-tracking');
+const enableLevellingButton = document.getElementById('enable-levelling');
 const flipTrackingXButton = document.getElementById('flip-tracking-x');
 const stopButton = document.getElementById('stop-tracking');
 const trackingVideo = document.getElementById('tracking-video');
@@ -107,6 +108,7 @@ const state = {
   depthSpan: 1,
   disparityBlend: DEFAULT_DISPARITY_BLEND,
   motionCapabilities: null,
+  tiltPermission: null,
   // A real object behind glass stays upright while its frame turns. Sharing the
   // screen's up axis makes the whole scene roll with the device instead.
   levelToGravity: levelEnabledByUrl,
@@ -200,7 +202,7 @@ function updateDebugReadout() {
     `depth span ${state.depthSpan.toFixed(2)}  cone splay ${coneSplay.toFixed(2)}x  disparity blend ${state.disparityBlend.toFixed(2)}  uniform-scale span ${uniformSpan === null ? '—' : uniformSpan.toFixed(1)}`,
     `visible-front anchor ${state.anchorVisibleFront ? `on  pulled ${state.visibleFrontCorrection.toFixed(3)}` : 'off'}`,
     `sensors ${describeMotionCapabilities()}`,
-    `level ${state.levelToGravity ? 'on' : 'off'}${levelInvert ? ' flipped' : ''}  roll ${state.screenRoll === null ? '—' : `${((state.screenRoll * 180) / Math.PI).toFixed(1)}°`}  applied ${((clampTiltCorrection(state.screenRoll ?? 0, { invert: levelInvert }) * 180) / Math.PI).toFixed(1)}°`,
+    `level ${state.levelToGravity ? 'on' : 'off'}${levelInvert ? ' flipped' : ''}  permission ${state.tiltPermission ?? '—'}  roll ${state.screenRoll === null ? '—' : `${((state.screenRoll * 180) / Math.PI).toFixed(1)}°`}  applied ${((clampTiltCorrection(state.screenRoll ?? 0, { invert: levelInvert }) * 180) / Math.PI).toFixed(1)}°`,
     `depth range ${state.scene ? `${state.scene.sourceDepth.near.toFixed(2)}–${state.scene.sourceDepth.far.toFixed(2)}${state.scene.depthRangeIsFitted ? ' (refit to view)' : ''}` : '—'}`,
   ].join('\n');
 }
@@ -562,6 +564,7 @@ async function loadPublishedScene({ force = false, variant = state.variant } = {
 }
 
 let flipGestureGuard = false;
+let levellingGestureGuard = false;
 
 // Reads which way is down so the miniature can stay upright while the device
 // rolls. Only the screen-plane roll is used, which is referenced to gravity and
@@ -604,6 +607,43 @@ const tracker = new HeadTracker({
     state.eyePose = pose;
     requestRender();
   },
+});
+
+// Shown only when levelling is wanted, the camera is running, and motion access
+// has not been granted. iOS home-screen apps have been seen to skip the prompt
+// entirely on a cold start, and there is otherwise no way to ask again without
+// restarting the camera.
+function updateLevellingButton() {
+  const needed = state.levelToGravity
+    && tracker.running
+    && state.tiltPermission !== null
+    && state.tiltPermission !== 'granted';
+  enableLevellingButton.hidden = !needed;
+}
+
+enableLevellingButton.addEventListener('pointerdown', (event) => {
+  if (touch.activePointerCount() > 0) {
+    event.preventDefault();
+    levellingGestureGuard = true;
+  }
+});
+
+enableLevellingButton.addEventListener('click', () => {
+  if (levellingGestureGuard) {
+    levellingGestureGuard = false;
+    return;
+  }
+  // Issued before any await so the tap still counts as a user action.
+  const request = tilt.start();
+  setStatus('Requesting motion access…');
+  void request.then((permission) => {
+    state.tiltPermission = permission;
+    setStatus(permission === 'granted'
+      ? 'Motion access granted · the view will stay upright.'
+      : 'Motion access was refused; the view will not stay upright.');
+    updateLevellingButton();
+    requestRender();
+  });
 });
 
 function updateTrackingDirectionButton() {
@@ -659,14 +699,25 @@ startButton.addEventListener('click', async () => {
       worldUnitMm: geometry.worldUnitMm,
       baselineEyeZ: geometry.baselineEyeZ,
     });
-    await tracker.start();
-    // Requested from inside the same gesture as the camera, because iOS gates
-    // motion events on a user action. A refusal is not fatal: the window works
-    // without levelling.
-    if (state.levelToGravity) {
-      const permission = await tilt.start();
-      if (permission !== 'granted') state.screenRoll = null;
+    // Both permission-gated calls are issued before anything is awaited, so
+    // both are made while the tap still counts as a user action. Awaiting the
+    // camera first spends that activation: starting it also fetches the face
+    // model, which takes seconds on a cold start, and the motion request that
+    // followed then found no activation left and never prompted. A home-screen
+    // app starts cold every time, which is why it failed there first.
+    const trackingStarted = tracker.start();
+    const tiltStarted = state.levelToGravity ? tilt.start() : null;
+    // Recorded independently of the camera, so its answer is never lost when
+    // the camera fails and its promise is always consumed.
+    if (tiltStarted) {
+      void tiltStarted.then((permission) => {
+        state.tiltPermission = permission;
+        if (permission !== 'granted') state.screenRoll = null;
+        updateLevellingButton();
+        requestRender();
+      });
     }
+    await trackingStarted;
     document.body.dataset.state = 'viewing';
     startButton.textContent = 'Tracking active';
     recenterButton.disabled = false;
@@ -691,6 +742,8 @@ stopButton.addEventListener('click', () => {
   tracker.stop();
   tilt.stop();
   state.screenRoll = null;
+  state.tiltPermission = null;
+  updateLevellingButton();
   stopContinuousRendering();
   startButton.textContent = 'Start 3D';
   startButton.disabled = false;
