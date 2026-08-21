@@ -36,7 +36,10 @@ import {
   probeMotionCapabilities,
   saveFrontCameraMirrorX,
 } from './mobile-runtime.js';
-import { fetchPublishedScenePair } from './mobile-scene-client.js';
+import {
+  MOBILE_RELIEF_EXAGGERATION,
+  fetchPublishedScenePair,
+} from './mobile-scene-client.js';
 import { clampTiltCorrection, createTiltTracker } from './device-tilt.js';
 
 const canvas = document.getElementById('viewer-canvas');
@@ -108,7 +111,7 @@ const state = {
   geometry: null,
   variant: 'full',
   reducedAvailable: null,
-  depthSpan: 1,
+  depthSpan: MOBILE_RELIEF_EXAGGERATION,
   disparityBlend: DEFAULT_DISPARITY_BLEND,
   motionCapabilities: null,
   tiltPermission: null,
@@ -538,7 +541,7 @@ async function loadPublishedScene({ force = false, variant = state.variant } = {
     state.manifest = envelope.manifest;
     state.depthSpan = Number.isFinite(envelope.manifest?.depthSpan)
       ? envelope.manifest.depthSpan
-      : 1;
+      : MOBILE_RELIEF_EXAGGERATION;
     state.disparityBlend = Number.isFinite(envelope.manifest?.disparityBlend)
       ? envelope.manifest.disparityBlend
       : DEFAULT_DISPARITY_BLEND;

@@ -267,6 +267,12 @@ The feature is successful when a user loads or generates an RGBDE scene at `http
 - Observation: Relief depth was a fixed distance behind the glass while the picture's size changed with the screen's orientation, so the same face read as around three times deeper held upright than held sideways.
   Evidence: `fitImageRect` scales the picture to the screen, so a 16:9 photograph is about 0.54 world units tall on a phone held upright and 1.84 held sideways, while `depthSpan` stayed at 1.0 either way. The ratio a viewer actually judges — depth against apparent size — therefore changed from 1.9 to 0.54 on turning the device, which the user described as the nose flattening away in landscape. The same fixed span also gave portrait and landscape *photographs* different apparent depth on the same screen. Depth is now a proportion of the fitted picture's height.
 
+- Observation: Making depth proportional needed the default recalibrating with it, and not doing so read as a regression.
+  Evidence: A span of 1 was a fixed 1.0 world unit before and became 1.0 times the fitted picture's height after. A 16:9 photograph is about 0.68 units tall on an iPad held upright, so the same scene came out at 0.68 against the 1.0 it had before, and the user reported it as flatter than the previous default rather than deeper. The mobile mapping now carries a 1.5 exaggeration, which returns 1.02 for that case.
+
+- Observation: The one principled value of Depth Magnification was not selectable from its own slider.
+  Evidence: The control is logarithmic across 0.1 to 100, so 1 sits exactly a third of the way along; with a hundred integer steps that is position 33.33 and the reachable neighbours are 0.98 and 1.05. Three hundred steps put 1 exactly on position 100, and reduce the step from 7 percent to 2.3 percent everywhere else.
+
 - Observation: The editor's Depth Magnification defaulted to 0.5, which halved every scene's depth for no stated reason.
   Evidence: `evaluateShapedDepthWithParams` computes `minDepth + magnification * (shaped - minDepth)`, so 1 is the identity and the scene at its own metric depth. The default is now 1, and `mobileDepthSpanForMagnification` changed from doubling to passing through, so the published relief span is unchanged rather than silently doubled.
 

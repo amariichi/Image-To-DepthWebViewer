@@ -2159,8 +2159,15 @@ function formatFarClip(value) {
   return value.toFixed(2);
 }
 
+// The slider is logarithmic across 0.1 to 100, so 1 sits a third of the way
+// along. With a hundred steps that is position 33.33, which no step can reach:
+// the neighbours are 0.98 and 1.05, and the one value that means "the scene at
+// its own metric depth" was not selectable. Three hundred steps put it exactly
+// on 100, and give finer control everywhere else as a side effect.
+const MAG_SLIDER_STEPS = 300;
+
 function sliderToMagnification(sliderValue) {
-  const t = clamp(sliderValue, 0, 100) / 100;
+  const t = clamp(sliderValue, 0, MAG_SLIDER_STEPS) / MAG_SLIDER_STEPS;
   const ratio = MAG_MAX / MAG_MIN;
   return MAG_MIN * Math.pow(ratio, t);
 }
@@ -2169,7 +2176,7 @@ function magnificationToSlider(magnification) {
   const mag = clamp(magnification, MAG_MIN, MAG_MAX);
   const ratio = Math.log(MAG_MAX / MAG_MIN);
   const t = Math.log(mag / MAG_MIN) / ratio;
-  return Math.round(t * 100);
+  return Math.round(t * MAG_SLIDER_STEPS);
 }
 
 function sliderToFarClip(sliderValue) {

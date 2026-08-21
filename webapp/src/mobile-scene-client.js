@@ -1,3 +1,5 @@
+export const MOBILE_RELIEF_EXAGGERATION = 1.5;
+
 // `baselineEyeZ` is only a fallback. The mobile viewer derives the real value
 // from the device's physical screen size and the viewer's measured distance,
 // because a virtual screen two world units tall must be viewed from roughly
@@ -12,7 +14,7 @@ export const MOBILE_PRESENTATION_DEFAULTS = Object.freeze({
   frontOffset: 0,
   screenOccupancy: 0.92,
   baselineEyeZ: 4.5,
-  depthSpan: 1,
+  depthSpan: MOBILE_RELIEF_EXAGGERATION,
   disparityBlend: 1,
 });
 
@@ -23,14 +25,20 @@ export const MOBILE_PRESENTATION_DEFAULTS = Object.freeze({
 // scaling on a real device.
 export const MAX_MOBILE_DEPTH_SPAN = 8;
 
-// Depth Magnification of 1 is the scene at its own metric depth, and the mobile
-// relief span that was settled on hardware is 1, so the two map one to one.
-// They were two to one while the editor defaulted to 0.5, which put the same
-// span at the same place; changing the editor default without this would have
-// silently doubled every published relief.
+// Depth Magnification of 1 is the scene at its own metric depth. The relief span
+// is a proportion of the fitted picture's height, so the multiplier here is how
+// much the mobile relief exaggerates that.
+//
+// 1.5 restores what the span of 1 gave before depth became proportional. A 16:9
+// photograph is about 0.68 units tall on an iPad held upright, so a proportional
+// span of 1 came out at 0.68 against the 1.0 the fixed span used to give -- the
+// same picture read as flatter than before, which is what recalibration was for.
 export function mobileDepthSpanForMagnification(magnification) {
   const value = Number.isFinite(magnification) ? magnification : 1;
-  return Math.min(Math.max(value, 0.2), MAX_MOBILE_DEPTH_SPAN);
+  return Math.min(
+    Math.max(value * MOBILE_RELIEF_EXAGGERATION, 0.2),
+    MAX_MOBILE_DEPTH_SPAN,
+  );
 }
 
 export function createMobileSceneManifest({
