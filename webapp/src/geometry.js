@@ -182,11 +182,18 @@ export function generatePerspectiveMesh({
       const pixelX = u * widthMinusOne;
       const screenX = (u - 0.5) * 2 * tanHalfX;
       const screenY = (0.5 - meshV) * 2 * tanHalfY;
-      const len = Math.hypot(screenX, screenY, 1);
-      const invLen = len === 0 ? 1 : 1 / len;
-      const dirX = screenX * invLen;
-      const dirY = screenY * invLen;
-      const dirZ = invLen;
+      // Not a unit vector. Depth Pro reports depth along the optical axis --
+      // `depth = 1 / (canonical_inverse_depth * W / f_px)` is the pinhole
+      // relation between disparity and z -- so a sample belongs at
+      // `(screenX * d, screenY * d, -d)`. Multiplying a unit ray by it instead
+      // treats the figure as a distance along the ray and places everything
+      // off-axis too close, by cos of its angle from the axis: about 4 percent
+      // at the top of a 32 degree capture and 21 at the corner of a 65 degree
+      // one. Across a face that is several centimetres of depth gradient where
+      // there should be none, which reads as the head being tilted.
+      const dirX = screenX;
+      const dirY = screenY;
+      const dirZ = 1;
       const depthValue = sampleDepth(depth, width, height, pixelX, pixelY, depthMin);
       const px = dirX * depthValue;
       const py = dirY * depthValue;
