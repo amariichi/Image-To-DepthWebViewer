@@ -52,6 +52,8 @@ This repository now ships a two-part toolchain: a WebGL viewer in `webapp/` and 
 
 ### Head-tracked mobile viewer
 
+<img width="270" height="480" alt="Head-tracked mobile viewer running on an iPhone" src="https://github.com/user-attachments/assets/2d58b740-3433-4033-a32a-1b32f11c906f" />
+
 The desktop editor can publish its current baked scene to a separate, touch-friendly viewer for iPhone and iPad:
 
 1. Open the editor at `http://localhost:5173/`, load or generate an RGBDE scene, finish the reconstruction/depth adjustments, and press **Publish to Mobile**.
@@ -169,6 +171,8 @@ The port-5173 relay keeps only the latest published scene in memory. Restarting 
    - **Enter VR**、**Enter Looking Glass**、**Show XR hints** は下の WebXR セクションで説明しています。バックエンドを別ホスト／別ポートで稼働させる場合は、ページ読込前に `window.__RGBDE_API_BASE__ = "http://host:port"` を設定するか、`webapp/src/app.js` の `API_BASE` を編集してください。
 
 ### ヘッドトラッキング対応モバイルビューア
+
+<img width="270" height="480" alt="Head-tracked mobile viewer running on an iPhone" src="https://github.com/user-attachments/assets/2d58b740-3433-4033-a32a-1b32f11c906f" />
 
 PC エディタで調整したシーンを、iPhone / iPad 向けのタッチ対応ビューアへ明示的に Publish できます。
 
