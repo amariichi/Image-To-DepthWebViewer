@@ -6,7 +6,6 @@ import {
   createMobileSceneManifest,
   fetchPublishedScenePair,
   MAX_MOBILE_DEPTH_SPAN,
-  MOBILE_RELIEF_EXAGGERATION,
   mobileDepthSpanForMagnification,
   publishMobileScene,
 } from '../webapp/src/mobile-scene-client.js';
@@ -28,9 +27,9 @@ test('creates a presentation-only schema v1 mobile manifest', () => {
   assert.equal('faceLandmarks' in manifest, false);
   assert.equal('geometryFov' in manifest, false);
   assert.equal(manifest.frontOffset, 0);
-  // The span is a proportion of the fitted picture's height, exaggerated by a
-  // factor that restores what a fixed span of 1 used to give.
-  assert.equal(manifest.depthSpan, MOBILE_RELIEF_EXAGGERATION);
+  // A span of 1 makes the relief as deep as the fitted picture is tall, which is
+  // where it was settled on hardware after trying the range up to 40.
+  assert.equal(manifest.depthSpan, 1);
   assert.equal(manifest.baselineEyeZ, 4.5);
   assert.equal(manifest.disparityBlend, 1);
   assert.equal(manifest.captureFovDeg, null);
@@ -42,8 +41,8 @@ test('maps desktop depth magnification to a bounded mobile relief span', () => {
   // the relief span settled on hardware, so the two map one to one. Halving the
   // editor default while doubling here put the same span at the same place;
   // changing one without the other would have silently doubled every relief.
-  assert.equal(mobileDepthSpanForMagnification(1), MOBILE_RELIEF_EXAGGERATION);
-  assert.equal(mobileDepthSpanForMagnification(2), 2 * MOBILE_RELIEF_EXAGGERATION);
+  assert.equal(mobileDepthSpanForMagnification(1), 1);
+  assert.equal(mobileDepthSpanForMagnification(2), 2);
   assert.equal(mobileDepthSpanForMagnification(0.1), 0.2);
   // The ceiling sits well above the miniature default so a real device can be
   // used to compare the presentation against plain uniform scaling, which needs
