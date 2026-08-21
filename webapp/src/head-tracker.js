@@ -286,12 +286,14 @@ export function stopMediaStream(stream) {
 
 // Which processor runs the model, in the order they are tried.
 //
-// Asking for GPU explicitly was measured slower than leaving it unstated on an
-// iPhone 17: 19.1 to 20 ms against 16 to 17, and that was with fewer draw calls
-// competing for the GPU, so the difference was not contention. The face model is
-// small, and for small models the GPU delegate's texture upload and readback can
-// cost more than the compute it saves. CPU is therefore tried first, with GPU
-// kept as a fallback for devices where that is not true.
+// Measured on an iPhone 17: 16 to 17 ms per inference on CPU, 19.1 to 20 ms on
+// GPU, and leaving it unstated gave the CPU figure — so the runtime already
+// chose CPU and naming GPU was a regression. Fewer draw calls were competing for
+// the GPU during the slower measurement than the faster one, so it was not
+// contention. The face landmarker is a small model, and for small models the
+// delegate's texture upload and readback can cost more than the compute it
+// saves. CPU is therefore tried first, with GPU kept as a fallback for devices
+// where that is not true.
 //
 // `?delegate=gpu` or `?delegate=cpu` forces one, so the two can be compared on a
 // device rather than argued about.
