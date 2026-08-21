@@ -33,30 +33,27 @@ export const MAX_TILT_CORRECTION_RAD = (18 * Math.PI) / 180;
 
 const MIN_GRAVITY_MAGNITUDE = 2;
 
-// Whether the reported gravity vector needs the page's rotation taken out.
+// The offset introduced by the device being held in a different orientation is
+// always a multiple of a quarter turn, so it can be removed without knowing
+// which frame a platform reports the vector in.
 //
-// The specification describes the device's natural frame, which would need
-// compensating, but iOS was measured to report gravity already in the frame of
-// the current screen orientation: portrait behaved correctly whichever sign was
-// applied, because there the angle is zero, while both landscape orientations
-// tilted by the full cap in opposite directions, which is what compensating an
-// already-compensated vector does. `none` is therefore the default, with the
-// other two selectable through `?levelCompensate=` so a device can settle it.
-export const ORIENTATION_COMPENSATIONS = Object.freeze({
-  none: 0,
-  add: 1,
-  subtract: -1,
-});
-export const DEFAULT_ORIENTATION_COMPENSATION = 'none';
+// Three attempts to derive that from `screen.orientation.angle` all failed on
+// hardware, and in opposite directions on different devices: iPhone Safari
+// needed one sign in landscape, iPad Chrome neither, and iPad portrait neither.
+// A real roll is small -- the correction is capped at 18 degrees and a device
+// held past 45 would have changed orientation anyway -- so rounding to the
+// nearest quarter turn and subtracting it leaves the roll and removes the
+// orientation, whatever the convention.
+export const QUARTER_TURN = Math.PI / 2;
 
-export function orientationCompensationSign(mode) {
-  const sign = ORIENTATION_COMPENSATIONS[String(mode ?? '').toLowerCase()];
-  return Number.isFinite(sign) ? sign : ORIENTATION_COMPENSATIONS[DEFAULT_ORIENTATION_COMPENSATION];
+export function removeOrientationOffset(roll) {
+  if (!Number.isFinite(roll)) return roll;
+  return wrapAngle(roll - Math.round(roll / QUARTER_TURN) * QUARTER_TURN);
 }
 
 // The angle of "down" within the screen plane, measured from the screen's own
 // downward direction.
-export function computeScreenRoll(gravity, screenAngleDeg = 0, compensate = DEFAULT_ORIENTATION_COMPENSATION) {
+export function computeScreenRoll(gravity) {
   const x = Number(gravity?.x);
   const y = Number(gravity?.y);
   if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
@@ -65,9 +62,7 @@ export function computeScreenRoll(gravity, screenAngleDeg = 0, compensate = DEFA
   if (Math.hypot(x, y) < MIN_GRAVITY_MAGNITUDE) return null;
   // Measured from the screen's up axis to world up, both within the screen
   // plane. Upright portrait reads (0, +G) and must give zero.
-  const deviceRoll = Math.atan2(-x, y);
-  const screenAngle = (Number(screenAngleDeg) || 0) * (Math.PI / 180);
-  return wrapAngle(deviceRoll + screenAngle * orientationCompensationSign(compensate));
+  return removeOrientationOffset(Math.atan2(-x, y));
 }
 
 export function wrapAngle(angle) {
@@ -134,7 +129,6 @@ export function createTiltTracker({
   screen = globalThis.screen,
   now = () => globalThis.performance?.now?.() ?? Date.now(),
   timeConstantMs = DEFAULT_TILT_TIME_CONSTANT_MS,
-  compensate = DEFAULT_ORIENTATION_COMPENSATION,
   onRoll = () => {},
 } = {}) {
   const filter = createRollFilter({ timeConstantMs });
@@ -147,7 +141,7 @@ export function createTiltTracker({
   function handleMotion(event) {
     const gravity = event?.accelerationIncludingGravity;
     const screenAngle = screen?.orientation?.angle ?? 0;
-    const roll = computeScreenRoll(gravity, screenAngle, compensate);
+    const roll = computeScreenRoll(gravity);
     lastReading = {
       x: Number(gravity?.x) || 0,
       y: Number(gravity?.y) || 0,

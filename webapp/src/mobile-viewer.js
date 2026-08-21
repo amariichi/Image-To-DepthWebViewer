@@ -75,9 +75,6 @@ let trackingMirrorX = flipOverride === null
 // device-dependent convention as the front camera's handedness, so it gets the
 // same escape hatch: `?level=0` turns levelling off, `?levelFlip=1` reverses it.
 const levelInvert = viewerParams.get('levelFlip') === '1';
-// Which frame a platform reports gravity in cannot be settled from the
-// specification, so it is selectable: none, add or subtract the page's rotation.
-const levelCompensate = viewerParams.get('levelCompensate');
 // Forces the face model onto one processor so the two can be compared on the
 // device. Left unset, the CPU path is tried first; see head-tracker.js.
 const delegateOverride = viewerParams.get('delegate');
@@ -248,7 +245,7 @@ function updateDebugReadout() {
     `visible-front anchor ${state.anchorVisibleFront ? `on  pulled ${state.visibleFrontCorrection.toFixed(3)}` : 'off'}`,
     `sensors ${describeMotionCapabilities()}`,
     `level ${state.levelToGravity ? 'on' : 'off'}${levelInvert ? ' flipped' : ''}  permission ${state.tiltPermission ?? '—'}  roll ${state.screenRoll === null ? '—' : `${((state.screenRoll * 180) / Math.PI).toFixed(1)}°`}  applied ${((clampTiltCorrection(state.screenRoll ?? 0, { invert: levelInvert }) * 180) / Math.PI).toFixed(1)}°`,
-    `gravity ${describeTiltReading()}  compensate ${levelCompensate ?? 'none'}`,
+    `gravity ${describeTiltReading()}`,
     `depth range ${state.scene ? `${state.scene.sourceDepth.near.toFixed(2)}–${state.scene.sourceDepth.far.toFixed(2)}${state.scene.depthRangeIsFitted ? ' (refit to view)' : ''}` : '—'}`,
   ].join('\n');
 }
@@ -581,7 +578,6 @@ let levellingGestureGuard = false;
 // rolls. Only the screen-plane roll is used, which is referenced to gravity and
 // so does not drift; no heading is involved.
 const tilt = createTiltTracker({
-  compensate: levelCompensate,
   onRoll(roll) {
     state.screenRoll = roll;
     requestRender();

@@ -8,7 +8,7 @@ import {
   computeScreenRoll,
   createRollFilter,
   createTiltTracker,
-  orientationCompensationSign,
+  removeOrientationOffset,
   requestTiltPermission,
   wrapAngle,
 } from '../webapp/src/device-tilt.js';
@@ -43,21 +43,41 @@ test('a device pointing straight up or down reports no usable roll', () => {
 });
 
 
-test('the page rotation may be added, subtracted, or left alone', () => {
-  // Which frame a platform reports the vector in cannot be settled from the
-  // specification, and guessing it wrong pins the correction at its cap. The
-  // choice is therefore explicit, and defaults to leaving the reading as it
-  // arrives.
-  const landscape = { x: G, y: 0, z: 0 };
-  assert.ok(Math.abs(deg(computeScreenRoll(landscape, 90)) + 90) < 1e-6, 'default ignores the angle');
-  assert.ok(Math.abs(deg(computeScreenRoll(landscape, 90, 'none')) + 90) < 1e-6);
-  assert.ok(Math.abs(computeScreenRoll(landscape, 90, 'add')) < 1e-6);
-  assert.ok(Math.abs(deg(computeScreenRoll(landscape, 90, 'subtract')) + 180) < 1e-6);
+test('holding the device in any orientation reads as level', () => {
+  // The offset from orientation is always a multiple of a quarter turn, so it
+  // is removed by rounding rather than by consulting screen.orientation.angle.
+  // Three attempts to derive that angle's convention failed on hardware, in
+  // opposite directions on different devices.
+  const held = (degrees) => ({
+    x: -G * Math.sin((degrees * Math.PI) / 180),
+    y: G * Math.cos((degrees * Math.PI) / 180),
+    z: 0,
+  });
+  for (const orientation of [0, 90, 180, 270, -90]) {
+    const roll = computeScreenRoll(held(orientation));
+    assert.ok(Math.abs(deg(roll)) < 1e-6, `orientation ${orientation} read as ${deg(roll)}`);
+  }
 
-  assert.equal(orientationCompensationSign('add'), 1);
-  assert.equal(orientationCompensationSign('subtract'), -1);
-  assert.equal(orientationCompensationSign('nonsense'), 0);
-  assert.equal(orientationCompensationSign(undefined), 0);
+  // A real roll on top of any orientation survives.
+  for (const orientation of [0, 90, 180, 270]) {
+    const roll = computeScreenRoll(held(orientation + 12));
+    assert.ok(Math.abs(deg(roll) - 12) < 1e-6, `orientation ${orientation} + 12 read as ${deg(roll)}`);
+  }
+});
+
+
+test('the quarter-turn offset is removed without swallowing a real roll', () => {
+  const q = Math.PI / 2;
+  assert.ok(Math.abs(removeOrientationOffset(0.3) - 0.3) < 1e-9);
+  assert.ok(Math.abs(removeOrientationOffset(q + 0.3) - 0.3) < 1e-9);
+  assert.ok(Math.abs(removeOrientationOffset(-q + 0.3) - 0.3) < 1e-9);
+  assert.ok(Math.abs(removeOrientationOffset(Math.PI - 0.3) + 0.3) < 1e-9);
+
+  // The residual can never exceed half a quarter turn, which is well past the
+  // 18 degree cap, so nothing usable is lost.
+  for (let a = -Math.PI; a <= Math.PI; a += 0.05) {
+    assert.ok(Math.abs(removeOrientationOffset(a)) <= q / 2 + 1e-9);
+  }
 });
 
 
@@ -112,11 +132,11 @@ test('the tracker starts only with permission and stops listening cleanly', asyn
   assert.equal(await tracker.start(), 'granted');
   assert.equal(tracker.running, true);
   listeners.get('devicemotion')({ accelerationIncludingGravity: { x: G, y: 0, z: 0 } });
-  assert.ok(Math.abs(deg(rolls.at(-1)) + 90) < 1e-6);
-  assert.ok(Math.abs(deg(tracker.getRawRoll()) + 90) < 1e-6);
 
   // The raw inputs are kept so a device can be read rather than reasoned about.
   assert.deepEqual(tracker.getReading(), { x: G, y: 0, z: 0, screenAngle: 0 });
+  // 90 degrees of orientation is removed, leaving no roll.
+  assert.ok(Math.abs(deg(tracker.getRawRoll())) < 1e-6);
 
   // A reading with no usable in-plane component must be ignored, not reported.
   const before = rolls.length;
