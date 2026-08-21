@@ -11,8 +11,10 @@ import {
   computeEyeObservation,
   createEyeCalibration,
   createPoseFilter,
+  FACE_LANDMARKER_DELEGATES,
   extractMetricHeadTranslation,
   mapMetricPoseToEyePose,
+  preferredDelegates,
   mapObservationToEyePose,
   observationsAreStable,
 } from '../webapp/src/head-tracker.js';
@@ -381,4 +383,40 @@ test('a calibration without a metric pose never drives the metric path', () => {
     { worldUnitMm: 65 },
   );
   assert.ok(Math.abs(still.x) < 1e-9);
+});
+
+
+test('the delegate order can be forced, and defaults to the measured-faster one', () => {
+  // Asking for GPU explicitly measured slower than leaving it unstated on an
+  // iPhone 17 -- 19.1 to 20 ms against 16 to 17, with fewer draw calls
+  // competing for the GPU, so it was not contention. The face model is small,
+  // and small models can lose more to texture upload and readback than the GPU
+  // saves in compute.
+  assert.deepEqual(preferredDelegates(null), FACE_LANDMARKER_DELEGATES);
+  assert.equal(preferredDelegates(null)[0], 'CPU');
+
+  // Either can be forced for comparison, and the other stays as a fallback so a
+  // device that cannot provide the requested one still tracks.
+  assert.deepEqual(preferredDelegates('gpu'), ['GPU', 'CPU']);
+  assert.deepEqual(preferredDelegates('CPU'), ['CPU', 'GPU']);
+  assert.deepEqual(preferredDelegates('nonsense'), FACE_LANDMARKER_DELEGATES);
+});
+
+
+test('the tracker passes its delegate choice to the landmarker factory', async () => {
+  let received = 'not called';
+  const tracker = new HeadTracker({
+    video: { readyState: 4, videoWidth: 640, videoHeight: 480, currentTime: 0, srcObject: null, play: async () => {}, pause: () => {} },
+    delegate: 'GPU',
+    mediaDevices: { getUserMedia: async () => ({ getTracks: () => [{ stop: () => {} }] }) },
+    landmarkerFactory: async (options) => {
+      received = options?.delegate;
+      return { close: () => {}, detectForVideo: () => ({}) };
+    },
+    schedule: () => 1,
+    cancelSchedule: () => {},
+  });
+  await tracker.start();
+  assert.equal(received, 'GPU');
+  tracker.stop({ emit: false });
 });

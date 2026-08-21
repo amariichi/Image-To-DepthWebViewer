@@ -284,24 +284,37 @@ export function stopMediaStream(stream) {
   stream.getTracks().forEach((track) => track.stop());
 }
 
-// Which processor runs the model was left unstated, so it fell to whatever the
-// runtime chose. The difference is large enough to be worth naming: the same
-// model typically runs several times slower on the CPU path, and the tracker
-// spends a third of its budget on inference at 20 Hz. GPU is asked for first and
-// the CPU path is kept as a fallback, since a device that cannot provide the GPU
-// delegate should still track.
-export const FACE_LANDMARKER_DELEGATES = ['GPU', 'CPU'];
+// Which processor runs the model, in the order they are tried.
+//
+// Asking for GPU explicitly was measured slower than leaving it unstated on an
+// iPhone 17: 19.1 to 20 ms against 16 to 17, and that was with fewer draw calls
+// competing for the GPU, so the difference was not contention. The face model is
+// small, and for small models the GPU delegate's texture upload and readback can
+// cost more than the compute it saves. CPU is therefore tried first, with GPU
+// kept as a fallback for devices where that is not true.
+//
+// `?delegate=gpu` or `?delegate=cpu` forces one, so the two can be compared on a
+// device rather than argued about.
+export const FACE_LANDMARKER_DELEGATES = ['CPU', 'GPU'];
 let activeDelegate = null;
 
 export function getActiveDelegate() {
   return activeDelegate;
 }
 
-export async function createMediaPipeFaceLandmarker() {
+export function preferredDelegates(requested) {
+  const wanted = String(requested ?? '').toUpperCase();
+  if (wanted === 'GPU' || wanted === 'CPU') {
+    return [wanted, ...FACE_LANDMARKER_DELEGATES.filter((name) => name !== wanted)];
+  }
+  return [...FACE_LANDMARKER_DELEGATES];
+}
+
+export async function createMediaPipeFaceLandmarker({ delegate: delegateOverride = null } = {}) {
   const { FaceLandmarker, FilesetResolver } = await import(MEDIAPIPE_MODULE_URL);
   const vision = await FilesetResolver.forVisionTasks(MEDIAPIPE_WASM_URL);
   let lastError = null;
-  for (const delegate of FACE_LANDMARKER_DELEGATES) {
+  for (const delegate of preferredDelegates(delegateOverride)) {
     try {
       const landmarker = await createFaceLandmarkerWithDelegate(FaceLandmarker, vision, delegate);
       activeDelegate = delegate;
@@ -367,6 +380,7 @@ export class HeadTracker {
     xyGain = DEFAULT_XY_GAIN,
     mediaDevices = globalThis.navigator?.mediaDevices,
     landmarkerFactory = createMediaPipeFaceLandmarker,
+    delegate = null,
     schedule = globalThis.requestAnimationFrame?.bind(globalThis),
     cancelSchedule = globalThis.cancelAnimationFrame?.bind(globalThis),
     now = globalThis.performance?.now?.bind(globalThis.performance) || Date.now,
@@ -380,6 +394,7 @@ export class HeadTracker {
     this.xyGain = Number.isFinite(xyGain) && xyGain > 0 ? xyGain : DEFAULT_XY_GAIN;
     this.mediaDevices = mediaDevices;
     this.landmarkerFactory = landmarkerFactory;
+    this.delegate = delegate;
     this.schedule = schedule || ((callback) => setTimeout(() => callback(performance.now()), 16));
     this.cancelSchedule = cancelSchedule || clearTimeout;
     this.now = now;
@@ -480,7 +495,7 @@ export class HeadTracker {
       this.metrics.cameraWidth = this.video.videoWidth;
       this.metrics.cameraHeight = this.video.videoHeight;
       this.emitStatus('initializing', 'Loading local face tracker…');
-      this.landmarker = await this.landmarkerFactory();
+      this.landmarker = await this.landmarkerFactory({ delegate: this.delegate });
       this.running = true;
       this.lastInferenceAt = -Infinity;
       this.lastVideoTime = -1;

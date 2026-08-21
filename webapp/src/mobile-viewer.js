@@ -75,6 +75,9 @@ let trackingMirrorX = flipOverride === null
 // device-dependent convention as the front camera's handedness, so it gets the
 // same escape hatch: `?level=0` turns levelling off, `?levelFlip=1` reverses it.
 const levelInvert = viewerParams.get('levelFlip') === '1';
+// Forces the face model onto one processor so the two can be compared on the
+// device. Left unset, the CPU path is tried first; see head-tracker.js.
+const delegateOverride = viewerParams.get('delegate');
 const levelEnabledByUrl = viewerParams.get('level') !== '0';
 const trackingXyGain = inferFrontCameraXyGain(navigator.userAgent);
 
@@ -605,6 +608,7 @@ const tracker = new HeadTracker({
   worldUnitMm: state.geometry.worldUnitMm,
   mirrorX: trackingMirrorX,
   xyGain: trackingXyGain,
+  delegate: delegateOverride,
   onStatus({ code, message }) {
     document.body.dataset.tracking = code;
     setStatus(message);
