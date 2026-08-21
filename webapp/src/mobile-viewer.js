@@ -1,5 +1,5 @@
 import { parseGlb } from './glb-loader.js';
-import { HeadTracker } from './head-tracker.js';
+import { HeadTracker, getActiveDelegate } from './head-tracker.js';
 import {
   computeEyeViewMatrix,
   computeOffAxisProjection,
@@ -224,7 +224,7 @@ function updateDebugReadout() {
     : `${Math.round(metrics.firstTrackedPoseMs)} ms`;
   poseReadout.textContent = [
     poseLine,
-    `render ${renderRate.rate().toFixed(1)} fps  inference ${metrics.inferenceHz.toFixed(1)} Hz / ${metrics.inferenceDurationMs.toFixed(1)} ms`,
+    `render ${renderRate.rate().toFixed(1)} fps  inference ${metrics.inferenceHz.toFixed(1)} Hz / ${metrics.inferenceDurationMs.toFixed(1)} ms on ${getActiveDelegate() ?? '—'}`,
     `camera ${metrics.cameraWidth || '—'}×${metrics.cameraHeight || '—'}  first pose ${firstPose}`,
     `viewport ${state.orientation}  ${window.innerWidth}×${window.innerHeight}`,
     `flip ${trackingMirrorX ? 'on' : 'off'}${flipOverride === null ? '' : ' (from URL)'}  source ${metrics.poseSource}  raw head x ${metrics.rawHeadXMm.toFixed(0)} mm  vs calibration ${metrics.calibratedHeadXMm.toFixed(0)} mm`,

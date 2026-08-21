@@ -141,7 +141,7 @@ test('a movement too small to shift a pixel is skipped, a visible one is not', (
   for (const [key, step] of [
     ['eyeY', DEFAULT_RENDER_THRESHOLDS.eye],
     ['eyeZ', DEFAULT_RENDER_THRESHOLDS.eye],
-    ['roll', DEFAULT_RENDER_THRESHOLDS.angle],
+    ['roll', DEFAULT_RENDER_THRESHOLDS.roll],
     ['yaw', DEFAULT_RENDER_THRESHOLDS.angle],
     ['pitch', DEFAULT_RENDER_THRESHOLDS.angle],
     ['panX', DEFAULT_RENDER_THRESHOLDS.pan],
@@ -179,4 +179,28 @@ test('replacing the scene or resizing always draws', () => {
   assert.equal(gate.shouldRender({ ...baseInputs, sceneId: 2 }), true);
   assert.equal(gate.shouldRender({ ...baseInputs, width: 403 }), true);
   assert.equal(gate.shouldRender({ ...baseInputs, height: 781 }), true);
+});
+
+
+test('roll is held to a looser limit than yaw and pitch, because it moves less', () => {
+  // Levelling rotates within the screen plane, moving a point by the image
+  // radius times the angle and halved again by the levelling gain. Yaw and
+  // pitch swing the deepest geometry instead, which is more than twenty times
+  // as far for the same angle. Sharing one limit made ordinary hand tremor
+  // exceed it on nearly every motion event, so the viewer redrew at the
+  // sensor's rate rather than at the rate the picture changed.
+  assert.ok(
+    DEFAULT_RENDER_THRESHOLDS.roll > DEFAULT_RENDER_THRESHOLDS.angle * 10,
+    'roll must be substantially looser than yaw and pitch',
+  );
+
+  const gate = createRenderGate();
+  gate.commit(baseInputs);
+  // A tremor-sized roll must not draw, while the same angle in yaw must.
+  const tremor = DEFAULT_RENDER_THRESHOLDS.angle * 4;
+  assert.equal(gate.shouldRender({ ...baseInputs, roll: tremor }), false);
+  assert.equal(gate.shouldRender({ ...baseInputs, yaw: tremor }), true);
+
+  // A roll big enough to shift a pixel still draws.
+  assert.equal(gate.shouldRender({ ...baseInputs, roll: DEFAULT_RENDER_THRESHOLDS.roll }), true);
 });

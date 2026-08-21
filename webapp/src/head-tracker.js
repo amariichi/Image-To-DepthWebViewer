@@ -284,11 +284,39 @@ export function stopMediaStream(stream) {
   stream.getTracks().forEach((track) => track.stop());
 }
 
+// Which processor runs the model was left unstated, so it fell to whatever the
+// runtime chose. The difference is large enough to be worth naming: the same
+// model typically runs several times slower on the CPU path, and the tracker
+// spends a third of its budget on inference at 20 Hz. GPU is asked for first and
+// the CPU path is kept as a fallback, since a device that cannot provide the GPU
+// delegate should still track.
+export const FACE_LANDMARKER_DELEGATES = ['GPU', 'CPU'];
+let activeDelegate = null;
+
+export function getActiveDelegate() {
+  return activeDelegate;
+}
+
 export async function createMediaPipeFaceLandmarker() {
   const { FaceLandmarker, FilesetResolver } = await import(MEDIAPIPE_MODULE_URL);
   const vision = await FilesetResolver.forVisionTasks(MEDIAPIPE_WASM_URL);
+  let lastError = null;
+  for (const delegate of FACE_LANDMARKER_DELEGATES) {
+    try {
+      const landmarker = await createFaceLandmarkerWithDelegate(FaceLandmarker, vision, delegate);
+      activeDelegate = delegate;
+      return landmarker;
+    } catch (error) {
+      lastError = error;
+      console.warn(`Face Landmarker ${delegate} delegate unavailable`, error);
+    }
+  }
+  throw lastError ?? new Error('Face Landmarker could not be created.');
+}
+
+function createFaceLandmarkerWithDelegate(FaceLandmarker, vision, delegate) {
   return FaceLandmarker.createFromOptions(vision, {
-    baseOptions: { modelAssetPath: FACE_LANDMARKER_MODEL_URL },
+    baseOptions: { modelAssetPath: FACE_LANDMARKER_MODEL_URL, delegate },
     runningMode: 'VIDEO',
     numFaces: 1,
     minFaceDetectionConfidence: 0.5,

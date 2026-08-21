@@ -121,8 +121,16 @@ export const DEFAULT_RENDER_THRESHOLDS = Object.freeze({
   // Eye translation moves a point at depth D by D / (eye + D) of itself, at
   // most about 0.63 for the deepest relief allowed.
   eye: 0.0015,
-  // Rotations swing the deepest geometry by roughly its depth times the angle.
+  // Yaw and pitch swing the deepest geometry, so the movement is roughly the
+  // relief depth times the angle, and the deepest relief allowed is 8.
   angle: 0.0002,
+  // Roll is different in kind and was wrongly given the same limit. Levelling
+  // rotates within the screen plane, so it moves a point by the image radius
+  // times the angle, halved again by the levelling gain -- about 0.3 units per
+  // radian against 8. Holding the depth limit made ordinary hand tremor exceed
+  // it on nearly every motion event, redrawing at the sensor's rate rather than
+  // at the rate the picture actually changed.
+  roll: 0.004,
   // Pan is applied directly in world units.
   pan: 0.0015,
   // Pinch moves the image edge by half the scale change.
@@ -147,7 +155,7 @@ export function createRenderGate(thresholds = {}) {
       if (moved(last.eyeX, inputs.eyeX, limits.eye)) return true;
       if (moved(last.eyeY, inputs.eyeY, limits.eye)) return true;
       if (moved(last.eyeZ, inputs.eyeZ, limits.eye)) return true;
-      if (moved(last.roll, inputs.roll, limits.angle)) return true;
+      if (moved(last.roll, inputs.roll, limits.roll)) return true;
       if (moved(last.yaw, inputs.yaw, limits.angle)) return true;
       if (moved(last.pitch, inputs.pitch, limits.angle)) return true;
       if (moved(last.panX, inputs.panX, limits.pan)) return true;
