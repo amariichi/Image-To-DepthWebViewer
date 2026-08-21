@@ -165,6 +165,15 @@ export function createMobileReliefScene({
   finitePositive(depthSpan, 'depthSpan');
   const safeFrontZ = Math.min(Number.isFinite(frontZ) ? frontZ : 0, 0);
   const imageRect = fitImageRect(sourceAspect, screenWidth, screenHeight, occupancy);
+  // Depth is a proportion of the picture, not a fixed distance behind the glass.
+  // How deep something looks is judged against how large it appears, and the
+  // fitted picture changes size with both the screen's orientation and the
+  // image's own shape: a landscape photograph is around 0.53 units tall on a
+  // phone held upright and 1.55 held sideways, so a fixed span made the same
+  // face read as three times deeper in one orientation than the other -- the
+  // nose flattening away on turning the device. Tying the span to the fitted
+  // height keeps the proportion, and with it the apparent relief.
+  const effectiveSpan = depthSpan * imageRect.height;
   const depthRangeIsFitted = Boolean(
     depthRange && depthRange.near > 0 && depthRange.far > depthRange.near,
   );
@@ -183,7 +192,7 @@ export function createMobileReliefScene({
     const uvOffset = vertex * 2;
     const depth = perpendicularDepth(positions, vertex);
     const normalizedDepth = normalizeReliefDepth(depth, sourceDepth, disparityBlend);
-    const z = safeFrontZ - normalizedDepth * depthSpan;
+    const z = safeFrontZ - normalizedDepth * effectiveSpan;
     const screenX = (uvs[uvOffset] - 0.5) * imageRect.width;
     const screenY = (0.5 - uvs[uvOffset + 1]) * imageRect.height;
     // Every vertex is placed on the ray from the calibrated baseline eye through
@@ -243,6 +252,7 @@ export function createMobileReliefScene({
     bounds: computeBounds(reliefPositions),
     frontZ: safeFrontZ,
     depthSpan,
+    effectiveSpan,
     depthRangeIsFitted,
     disparityBlend: clamp(disparityBlend, 0, 1),
     imageRect,

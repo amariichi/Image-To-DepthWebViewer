@@ -264,6 +264,12 @@ The feature is successful when a user loads or generates an RGBDE scene at `http
 - Observation: The relief depth limit did nothing but harm, and its only possible action was to break the construction it was meant to protect.
   Evidence: At 0.25 of the eye distance it allowed a depth scale of 1.15 at the default span and 4.6 eye distance, so magnifying flattened the model almost immediately, and it fell below 1 at a span of 2 or more, so the relief depth slider stopped deepening anything past about 1.15 while appearing to. Scaling Z alone also leaves each vertex's lateral expansion, baked for its original depth, inconsistent with its new one, so the initial view stops reproducing the source image. The crescent it was introduced for had other causes, since fixed: depth measured along the capture ray, and Depth Magnification counted twice. Pinch is now uniform in all three axes, which is self-consistent, and the bounds that matter remain in the touch scale range and the authored span.
 
+- Observation: Relief depth was a fixed distance behind the glass while the picture's size changed with the screen's orientation, so the same face read as around three times deeper held upright than held sideways.
+  Evidence: `fitImageRect` scales the picture to the screen, so a 16:9 photograph is about 0.54 world units tall on a phone held upright and 1.84 held sideways, while `depthSpan` stayed at 1.0 either way. The ratio a viewer actually judges — depth against apparent size — therefore changed from 1.9 to 0.54 on turning the device, which the user described as the nose flattening away in landscape. The same fixed span also gave portrait and landscape *photographs* different apparent depth on the same screen. Depth is now a proportion of the fitted picture's height.
+
+- Observation: The editor's Depth Magnification defaulted to 0.5, which halved every scene's depth for no stated reason.
+  Evidence: `evaluateShapedDepthWithParams` computes `minDepth + magnification * (shaped - minDepth)`, so 1 is the identity and the scene at its own metric depth. The default is now 1, and `mobileDepthSpanForMagnification` changed from doubling to passing through, so the published relief span is unchanged rather than silently doubled.
+
 ## Decision Log
 
 - Decision: Keep the mobile viewer a separate `/viewer.html` entry point and keep monitor/SBS/WebXR/Looking Glass code paths untouched.

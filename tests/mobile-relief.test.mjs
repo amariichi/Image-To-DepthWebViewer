@@ -67,7 +67,10 @@ test('relief anchors the nearest sample to glass and bounds all depth behind it'
   });
   assert.equal(relief.frontZ, 0, 'legacy positive offsets must be clamped to the glass');
   assert.ok(Math.abs(relief.bounds.max[2]) < 1e-6);
-  assert.ok(Math.abs(relief.bounds.min[2] + 0.25) < 1e-6);
+  // Depth is a proportion of the fitted picture, so the span multiplies its
+  // height rather than being a fixed distance behind the glass.
+  assert.ok(Math.abs(relief.effectiveSpan - 0.25 * relief.imageRect.height) < 1e-6);
+  assert.ok(Math.abs(relief.bounds.min[2] + relief.effectiveSpan) < 1e-6);
   assert.ok([...relief.positions].every(Number.isFinite));
 });
 
@@ -345,7 +348,7 @@ test('the relief carries a front sample grid covering the whole image', () => {
   for (let index = 0; index < relief.frontSamples.length; index += FRONT_SAMPLE_STRIDE) {
     // Every stored point is a real relief point, never in front of the glass.
     assert.ok(relief.frontSamples[index + 2] <= 1e-6);
-    assert.ok(relief.frontSamples[index + 2] >= -1 - 1e-6);
+    assert.ok(relief.frontSamples[index + 2] >= -relief.effectiveSpan - 1e-6);
     // Each cell also records the source depth range it covers.
     assert.ok(relief.frontSamples[index + 3] > 0);
     assert.ok(relief.frontSamples[index + 4] >= relief.frontSamples[index + 3]);
@@ -500,4 +503,30 @@ test('exact image reproduction and the outward splay are the same construction',
   // subtends; it is not an adjustable parameter.
   assert.ok(Math.abs((eyeZ + 1) / eyeZ - 1.217) < 0.001);
   assert.ok(Math.abs((eyeZ + 8) / eyeZ - 2.739) < 0.001);
+});
+
+
+test('the same picture keeps its depth when the screen turns', () => {
+  // The fitted picture changes size with the screen's orientation, so a fixed
+  // span made the same face read as around three times deeper held upright than
+  // held sideways: the nose flattened away on turning the device.
+  const build = (screenWidth, screenHeight) => createMobileReliefScene({
+    scene: sourceScene,
+    sourceAspect: 16 / 9,
+    screenWidth,
+    screenHeight,
+    baselineEyeZ: 4.6,
+    depthSpan: 1,
+  });
+
+  const upright = build(2 * 0.52, 2);
+  const sideways = build(2 * 1.94, 2);
+
+  // The picture really does change size between the two.
+  assert.ok(sideways.imageRect.height > upright.imageRect.height * 2.5);
+
+  // Depth follows it, so the proportion the viewer judges is unchanged.
+  const proportion = (relief) => relief.effectiveSpan / relief.imageRect.height;
+  assert.ok(Math.abs(proportion(upright) - proportion(sideways)) < 1e-9);
+  assert.ok(Math.abs(proportion(upright) - 1) < 1e-9);
 });

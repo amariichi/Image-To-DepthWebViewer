@@ -37,7 +37,12 @@ test('creates a presentation-only schema v1 mobile manifest', () => {
 
 
 test('maps desktop depth magnification to a bounded mobile relief span', () => {
-  assert.equal(mobileDepthSpanForMagnification(0.5), 1);
+  // Depth Magnification of 1 is the scene at its own metric depth, and 1 is also
+  // the relief span settled on hardware, so the two map one to one. Halving the
+  // editor default while doubling here put the same span at the same place;
+  // changing one without the other would have silently doubled every relief.
+  assert.equal(mobileDepthSpanForMagnification(1), 1);
+  assert.equal(mobileDepthSpanForMagnification(0.5), 0.5);
   assert.equal(mobileDepthSpanForMagnification(0.1), 0.2);
   // The ceiling sits well above the miniature default so a real device can be
   // used to compare the presentation against plain uniform scaling, which needs

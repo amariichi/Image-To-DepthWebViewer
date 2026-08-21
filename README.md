@@ -71,7 +71,7 @@ Touch works with or without the camera:
 
 Zooming in also re-aims the depth: whatever is on screen is brought forward onto the glass and the relief is rebuilt over just the depth range in view, so distant detail becomes inspectable instead of staying flat. Zooming back out restores the whole scene.
 
-**Depth Magnification** in the editor sets how deep the published relief is (default `1.0`, range `0.2`–`1.8`, where one unit is half the screen's physical height). Everything else adapts on the device: eye distance comes from a table of physical screen sizes, head position from MediaPipe's metric face pose, and the horizon stays level using gravity.
+**Depth Magnification** in the editor sets how deep the published relief is, as a proportion of the picture's height on screen, so the same scene keeps its depth when you turn the device. Everything else adapts on the device: eye distance comes from a table of physical screen sizes, head position from MediaPipe's metric face pose, and the horizon stays level using gravity.
 
 Camera frames and face landmarks never leave the phone. The viewer downloads the pinned MediaPipe runtime and model on first use and nothing else; no gyroscope is requested, and motion access is used only to keep the view upright.
 
@@ -188,7 +188,7 @@ An ordinary panel shows both eyes the same image, so viewing square-on, or with 
 
 ズームすると深度の割り当ても追従します。画面内のものが手前のガラス面へ引き寄せられ、可視範囲の深度だけで relief が組み直されるので、奥のものが平らなままにならず立体的に見られます。ズームを戻せば全景に復帰します。
 
-エディタの **Depth Magnification** が公開時の relief の厚みを決めます（既定 `1.0`、範囲 `0.2`〜`1.8`。1 単位は画面の物理高さの半分）。それ以外は端末側で自動調整されます ── 視距離は画面実寸のテーブルから、頭部位置は MediaPipe の実寸フェイスポーズから、水平は重力から求めます。
+エディタの **Depth Magnification** が公開時の relief の厚みを決めます。画面上の画像の高さに対する比率なので、端末を回しても奥行き感は変わりません。それ以外は端末側で自動調整されます ── 視距離は画面実寸のテーブルから、頭部位置は MediaPipe の実寸フェイスポーズから、水平は重力から求めます。
 
 カメラ映像と顔ランドマークは端末外へ出ません。初回に固定バージョンの MediaPipe とモデルを取得するだけです。ジャイロは要求せず、モーション許可は水平維持にのみ使います。
 

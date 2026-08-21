@@ -218,7 +218,8 @@ function updateDebugReadout() {
   // contract distant content instead, so the picture would no longer match.
   // Past roughly 1.5 the splay turns each depth discontinuity into a long
   // radial streak.
-  const coneSplay = (currentBaselineEyeZ() + state.depthSpan) / currentBaselineEyeZ();
+  const effectiveSpan = state.scene?.effectiveSpan ?? state.depthSpan;
+  const coneSplay = (currentBaselineEyeZ() + effectiveSpan) / currentBaselineEyeZ();
   const uniformSpan = state.scene ? estimateUniformScaleDepthSpan({
     sourceDepth: state.scene.sourceDepth,
     imageRectHeight: state.scene.imageRect?.height,
@@ -241,7 +242,7 @@ function updateDebugReadout() {
     `flip ${trackingMirrorX ? 'on' : 'off'}${flipOverride === null ? '' : ' (from URL)'}  source ${metrics.poseSource}  raw head x ${metrics.rawHeadXMm.toFixed(0)} mm  vs calibration ${metrics.calibratedHeadXMm.toFixed(0)} mm`,
     `screen ${screenMetrics.label} (${screenMetrics.source})  ${(state.geometry?.screenHeightMm ?? 0).toFixed(0)} mm tall  1 unit ${(state.geometry?.worldUnitMm ?? 0).toFixed(1)} mm`,
     `viewing ${viewingDistanceMm.toFixed(0)} mm  eyeZ ${(state.geometry?.baselineEyeZ ?? 0).toFixed(2)}  fov ${(state.geometry?.verticalFovDeg ?? 0).toFixed(1)}°  head ${metrics.headDistanceMm ? `${metrics.headDistanceMm.toFixed(0)} mm` : '—'}`,
-    `depth span ${state.depthSpan.toFixed(2)}  cone splay ${coneSplay.toFixed(2)}x  disparity blend ${state.disparityBlend.toFixed(2)}  uniform-scale span ${uniformSpan === null ? '—' : uniformSpan.toFixed(1)}`,
+    `depth span ${state.depthSpan.toFixed(2)} → ${effectiveSpan.toFixed(2)}  cone splay ${coneSplay.toFixed(2)}x  disparity blend ${state.disparityBlend.toFixed(2)}  uniform-scale span ${uniformSpan === null ? '—' : uniformSpan.toFixed(1)}`,
     `visible-front anchor ${state.anchorVisibleFront ? `on  pulled ${state.visibleFrontCorrection.toFixed(3)}` : 'off'}`,
     `sensors ${describeMotionCapabilities()}`,
     `level ${state.levelToGravity ? 'on' : 'off'}${levelInvert ? ' flipped' : ''}  permission ${state.tiltPermission ?? '—'}  roll ${state.screenRoll === null ? '—' : `${((state.screenRoll * 180) / Math.PI).toFixed(1)}°`}  applied ${((clampTiltCorrection(state.screenRoll ?? 0, { invert: levelInvert }) * 180) / Math.PI).toFixed(1)}°`,

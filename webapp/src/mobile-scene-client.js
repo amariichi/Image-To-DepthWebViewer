@@ -23,9 +23,14 @@ export const MOBILE_PRESENTATION_DEFAULTS = Object.freeze({
 // scaling on a real device.
 export const MAX_MOBILE_DEPTH_SPAN = 8;
 
+// Depth Magnification of 1 is the scene at its own metric depth, and the mobile
+// relief span that was settled on hardware is 1, so the two map one to one.
+// They were two to one while the editor defaulted to 0.5, which put the same
+// span at the same place; changing the editor default without this would have
+// silently doubled every published relief.
 export function mobileDepthSpanForMagnification(magnification) {
-  const value = Number.isFinite(magnification) ? magnification : 0.5;
-  return Math.min(Math.max(value * 2, 0.2), MAX_MOBILE_DEPTH_SPAN);
+  const value = Number.isFinite(magnification) ? magnification : 1;
+  return Math.min(Math.max(value, 0.2), MAX_MOBILE_DEPTH_SPAN);
 }
 
 export function createMobileSceneManifest({

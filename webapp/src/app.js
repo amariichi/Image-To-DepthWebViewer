@@ -114,7 +114,10 @@ const LOOKING_GLASS_TARGET_Z = -0.575;
 const LOOKING_GLASS_TARGET_Y = 0;
 const MAG_MIN = 0.1;
 const MAG_MAX = 100;
-const MAG_DEFAULT = 0.5;
+// One is the identity: `shapeDepth` computes `minDepth + magnification *
+// (shaped - minDepth)`, so this is the scene at its own metric depth. The
+// previous 0.5 halved every scene's depth by default for no stated reason.
+const MAG_DEFAULT = 1;
 const FAR_MAX = 1000;
 const FAR_MIN = 0.2;
 const FAR_AUTO_EXPANSION = 10;
