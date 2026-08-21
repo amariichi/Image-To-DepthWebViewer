@@ -276,6 +276,12 @@ The feature is successful when a user loads or generates an RGBDE scene at `http
 - Observation: The editor's Depth Magnification defaulted to 0.5, which halved every scene's depth for no stated reason.
   Evidence: `evaluateShapedDepthWithParams` computes `minDepth + magnification * (shaped - minDepth)`, so 1 is the identity and the scene at its own metric depth. The default is now 1, and `mobileDepthSpanForMagnification` changed from doubling to passing through, so the published relief span is unchanged rather than silently doubled.
 
+- Observation: Bounding the relief was never justified, and it is the main reason the mobile view reads as flatter than the desktop one.
+  Evidence: The desktop path renders the scene at full metric depth, clipped at a thousand metres, while the mobile path compresses it into a span. Nothing in the head-coupled construction requires that compression: the near plane is already derived from the eye distance, so depth precision holds, and the initial view reproduces the source image whatever the span, so raising it cannot disturb the state the viewer starts from. The bound came from the "miniature just behind the glass" framing rather than from any constraint. What a large span actually costs is a wide reconstruction cone and distant content sweeping across the frame as the head moves, and that sweep is correct: a small window onto a deep scene behaves exactly that way.
+
+- Observation: The span of 8 that once read as a cone had never been seen working.
+  Evidence: At the time it carried both of the defects found afterwards — depth measured along the capture ray, which bowed a flat surface backwards at its edges, and the depth limit, which scaled Z to 0.25 at that span and left it inconsistent with the lateral expansion baked for the original depth. The ceiling is now 40, and what it looks like there is genuinely unknown.
+
 ## Decision Log
 
 - Decision: Keep the mobile viewer a separate `/viewer.html` entry point and keep monitor/SBS/WebXR/Looking Glass code paths untouched.

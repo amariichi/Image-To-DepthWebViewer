@@ -18,12 +18,18 @@ export const MOBILE_PRESENTATION_DEFAULTS = Object.freeze({
   disparityBlend: 1,
 });
 
-// The ceiling is deliberately far above the "miniature just behind the glass"
-// default. A monocular head-tracked display has no vergence/accommodation
-// conflict, so unlike a stereo display it can carry a great deal more depth,
-// and a deep setting is how the presentation is compared against plain uniform
-// scaling on a real device.
-export const MAX_MOBILE_DEPTH_SPAN = 8;
+// Bounding the relief at all is a choice, not a requirement, and the ceiling is
+// set high enough not to prejudge it.
+//
+// The initial view reproduces the source image whatever the span, so raising it
+// risks nothing in the state the viewer starts from. What a large span buys is
+// depth; what it costs is that the relief becomes a wide cone and distant
+// content sweeps across the frame as the head moves. That sweep is not a
+// defect: a small window onto a deep scene really does behave that way, which
+// is why so little is visible through a keyhole. The desktop path shows the
+// scene at full metric depth and clips at a thousand metres, and reads as
+// deeper for exactly this reason.
+export const MAX_MOBILE_DEPTH_SPAN = 40;
 
 // Depth Magnification of 1 is the scene at its own metric depth. The relief span
 // is a proportion of the fitted picture's height, so the multiplier here is how

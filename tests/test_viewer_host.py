@@ -81,7 +81,7 @@ class ViewerHostApiTest(unittest.TestCase):
             manifest(depthSpan=0),
             # A monocular head-tracked display has no vergence/accommodation
             # conflict, so it can carry far more depth than a stereo display.
-            manifest(depthSpan=8.01),
+            manifest(depthSpan=40.01),
             manifest(disparityBlend=-0.1),
             manifest(disparityBlend=1.1),
             manifest(captureFovDeg=0),
@@ -101,11 +101,11 @@ class ViewerHostApiTest(unittest.TestCase):
         response = self.client.post(
             "/viewer-api/scene",
             files={"model": ("scene.glb", b"model", "model/gltf-binary")},
-            data={"manifest": manifest(depthSpan=8.0, disparityBlend=0.5, captureFovDeg=62.5)},
+            data={"manifest": manifest(depthSpan=40.0, disparityBlend=0.5, captureFovDeg=62.5)},
         )
         self.assertEqual(response.status_code, 200)
         stored = self.client.get("/viewer-api/scene/manifest").json()["manifest"]
-        self.assertEqual(stored["depthSpan"], 8.0)
+        self.assertEqual(stored["depthSpan"], 40.0)
         self.assertEqual(stored["disparityBlend"], 0.5)
         self.assertEqual(stored["captureFovDeg"], 62.5)
 
