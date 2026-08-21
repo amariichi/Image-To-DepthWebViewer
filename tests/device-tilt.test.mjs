@@ -8,6 +8,7 @@ import {
   computeScreenRoll,
   createRollFilter,
   createTiltTracker,
+  orientationCompensationSign,
   requestTiltPermission,
   wrapAngle,
 } from '../webapp/src/device-tilt.js';
@@ -16,50 +17,47 @@ const G = 9.81;
 const deg = (radians) => (radians * 180) / Math.PI;
 
 
-test('screen roll is read from the gravity vector, not from Euler angles', () => {
-  // Held upright: gravity points down the screen, so there is no roll.
-  assert.equal(computeScreenRoll({ x: 0, y: -G, z: 0 }), 0);
-
-  // Rolled until gravity lies along the screen's right edge.
-  assert.ok(Math.abs(deg(computeScreenRoll({ x: G, y: 0, z: 0 })) - 90) < 1e-6);
-  assert.ok(Math.abs(deg(computeScreenRoll({ x: -G, y: 0, z: 0 })) + 90) < 1e-6);
+test('the reported vector points away from gravity, not along it', () => {
+  // An accelerometer at rest measures the reaction holding the device up, so a
+  // device stood upright in portrait reads about +9.81 on y. Reading it as
+  // though it pointed downwards put portrait at 180 degrees and landscape at
+  // -90, pinning the correction at its cap in opposite directions: the view
+  // tilted left in portrait and right in landscape, never level.
+  assert.equal(computeScreenRoll({ x: 0, y: G, z: 0 }), 0);
 
   // A modest, realistic roll.
-  const roll = computeScreenRoll({ x: G * Math.sin(Math.PI / 9), y: -G * Math.cos(Math.PI / 9), z: 0 });
-  assert.ok(Math.abs(deg(roll) - 20) < 1e-6);
+  const roll = computeScreenRoll({ x: -G * Math.sin(Math.PI / 9), y: G * Math.cos(Math.PI / 9), z: 0 });
+  assert.ok(Math.abs(deg(roll) - 20) < 1e-6, `expected 20 degrees, got ${deg(roll)}`);
+  const other = computeScreenRoll({ x: G * Math.sin(Math.PI / 9), y: G * Math.cos(Math.PI / 9), z: 0 });
+  assert.ok(Math.abs(deg(other) + 20) < 1e-6);
 });
 
 
 test('a device pointing straight up or down reports no usable roll', () => {
-  // Lying flat on a table, gravity is almost entirely along the screen normal,
-  // so its direction within the screen plane is meaningless rather than noisy.
-  assert.equal(computeScreenRoll({ x: 0.1, y: -0.2, z: -G }), null);
-  assert.equal(computeScreenRoll({ x: Number.NaN, y: -G, z: 0 }), null);
+  // Lying flat on a table, the vector is almost entirely along the screen
+  // normal, so its direction within the screen plane is meaningless rather than
+  // merely noisy.
+  assert.equal(computeScreenRoll({ x: 0.1, y: -0.2, z: G }), null);
+  assert.equal(computeScreenRoll({ x: Number.NaN, y: G, z: 0 }), null);
   assert.equal(computeScreenRoll(null), null);
 });
 
 
-test('both landscape orientations read as level, not pinned at the cap', () => {
-  // Gravity is reported in the device's natural frame, which does not turn with
-  // the page, so the page's rotation has to be added back. Subtracting it made
-  // both landscape orientations come out at 180 degrees, which pinned the
-  // levelling at its cap and tilted the view by a fixed 18 degrees whichever way
-  // the device was turned.
-  //
-  // Turned anticlockwise: gravity lies along the device's -x, and the page
-  // reports 90.
-  assert.ok(Math.abs(computeScreenRoll({ x: -G, y: 0, z: 0 }, 90)) < 1e-6);
-  // Turned clockwise: gravity lies along +x, and the page reports 270.
-  assert.ok(Math.abs(computeScreenRoll({ x: G, y: 0, z: 0 }, 270)) < 1e-6);
-  // Upside down.
-  assert.ok(Math.abs(computeScreenRoll({ x: 0, y: G, z: 0 }, 180)) < 1e-6);
+test('the page rotation may be added, subtracted, or left alone', () => {
+  // Which frame a platform reports the vector in cannot be settled from the
+  // specification, and guessing it wrong pins the correction at its cap. The
+  // choice is therefore explicit, and defaults to leaving the reading as it
+  // arrives.
+  const landscape = { x: G, y: 0, z: 0 };
+  assert.ok(Math.abs(deg(computeScreenRoll(landscape, 90)) + 90) < 1e-6, 'default ignores the angle');
+  assert.ok(Math.abs(deg(computeScreenRoll(landscape, 90, 'none')) + 90) < 1e-6);
+  assert.ok(Math.abs(computeScreenRoll(landscape, 90, 'add')) < 1e-6);
+  assert.ok(Math.abs(deg(computeScreenRoll(landscape, 90, 'subtract')) + 180) < 1e-6);
 
-  // A genuine roll on top of a landscape orientation still reads as that roll.
-  const rolled = computeScreenRoll(
-    { x: -G * Math.cos(Math.PI / 18), y: -G * Math.sin(Math.PI / 18), z: 0 },
-    90,
-  );
-  assert.ok(Math.abs(deg(rolled) - 10) < 1e-6, `expected 10 degrees, got ${deg(rolled)}`);
+  assert.equal(orientationCompensationSign('add'), 1);
+  assert.equal(orientationCompensationSign('subtract'), -1);
+  assert.equal(orientationCompensationSign('nonsense'), 0);
+  assert.equal(orientationCompensationSign(undefined), 0);
 });
 
 
@@ -114,12 +112,15 @@ test('the tracker starts only with permission and stops listening cleanly', asyn
   assert.equal(await tracker.start(), 'granted');
   assert.equal(tracker.running, true);
   listeners.get('devicemotion')({ accelerationIncludingGravity: { x: G, y: 0, z: 0 } });
-  assert.ok(Math.abs(deg(rolls.at(-1)) - 90) < 1e-6);
-  assert.ok(Math.abs(deg(tracker.getRawRoll()) - 90) < 1e-6);
+  assert.ok(Math.abs(deg(rolls.at(-1)) + 90) < 1e-6);
+  assert.ok(Math.abs(deg(tracker.getRawRoll()) + 90) < 1e-6);
+
+  // The raw inputs are kept so a device can be read rather than reasoned about.
+  assert.deepEqual(tracker.getReading(), { x: G, y: 0, z: 0, screenAngle: 0 });
 
   // A reading with no usable in-plane component must be ignored, not reported.
   const before = rolls.length;
-  listeners.get('devicemotion')({ accelerationIncludingGravity: { x: 0, y: 0, z: -G } });
+  listeners.get('devicemotion')({ accelerationIncludingGravity: { x: 0, y: 0, z: G } });
   assert.equal(rolls.length, before);
 
   tracker.stop();

@@ -252,7 +252,13 @@ The feature is successful when a user loads or generates an RGBDE scene at `http
 - Observation: The gated renderer reached its predicted rate once roll had its own threshold.
   Evidence: 60 frames a second unconditionally, then 35 to 50 with the gate, then 20 to 27 once roll stopped being held to the yaw and pitch limit -- about a 60 percent reduction in draw calls against the original loop, and within a few frames of the 20 Hz rate at which the eye pose actually changes. The residual few frames come from real device movement crossing the roll threshold, which is legitimate work.
 
-- Observation: The screen orientation angle was applied with the wrong sign, which pinned levelling at its cap in both landscape orientations.
+- Observation: The reported motion vector points away from gravity, not along it, and reading it the wrong way round pinned levelling at its cap in every orientation.
+  Evidence: An accelerometer at rest measures the reaction holding the device up, so `accelerationIncludingGravity` reads about +9.81 on y for a device stood upright in portrait, not -9.81. Taking it as the gravity direction put portrait at 180 degrees and landscape at -90, both far past the 18 degree cap and with opposite signs, which is exactly what the user saw: the view tilted left in portrait and right in landscape, never level, whichever sign was applied to the screen orientation angle. Two attempts to fix this by reasoning about that angle failed because the error was upstream of it.
+
+- Observation: Which frame a platform reports the motion vector in cannot be settled from the specification, so it was made selectable and the raw inputs were surfaced.
+  Evidence: The specification describes the device's natural frame, which would need the page's rotation compensated, but two derivations from it produced behaviour the device contradicted. `?levelCompensate=none|add|subtract` now selects it, defaulting to leaving the reading alone, and the debug readout shows the raw x, y, z and `screen.orientation.angle` so one measurement can settle it.
+
+- Observation: An earlier note claimed the screen orientation angle was applied with the wrong sign. That was wrong; it is superseded by the two observations above.
   Evidence: `accelerationIncludingGravity` is reported in the device's natural frame, which does not turn with the page. Turning the device anticlockwise puts gravity along its -x for a device roll of -90 while the page reports an angle of 90; turning it clockwise gives +90 against 270. Subtracting produced -180 in both cases, far past the 18 degree cap, so the view sat at a fixed tilt whichever way the device was turned and never level -- exactly what the user reported. Adding gives 0 for both.
 
 - Observation: The relief depth limit did nothing but harm, and its only possible action was to break the construction it was meant to protect.

@@ -12,6 +12,13 @@
 // acceleration, but gravity is a constant and hand motion is not, so a low-pass
 // filter separates them.
 //
+// That vector points *away* from gravity, not along it: an accelerometer at
+// rest measures the reaction holding the device up, so a device stood upright in
+// portrait reads about +9.81 on y, not -9.81. Reading it as though it pointed
+// downwards put portrait at 180 degrees and landscape at -90, which pinned the
+// correction at its cap in opposite directions -- the device tilted left in
+// portrait and right in landscape, never level.
+//
 // Only roll within the screen plane is used. That is referenced to gravity and
 // therefore does not drift, unlike a heading, which would need the
 // magnetometer and would wander indoors.
@@ -26,28 +33,41 @@ export const MAX_TILT_CORRECTION_RAD = (18 * Math.PI) / 180;
 
 const MIN_GRAVITY_MAGNITUDE = 2;
 
-// The angle of "down" within the screen plane, measured from the screen's own
-// downward direction, with the page's rotation relative to the hardware taken
-// out.
+// Whether the reported gravity vector needs the page's rotation taken out.
 //
-// `accelerationIncludingGravity` is reported in the device's natural frame,
-// which does not turn with the page, so the page's rotation has to be added
-// back. The sign matters and was wrong at first: turning the device
-// anticlockwise puts gravity along its -x, giving a device roll of -90, while
-// the page rotates to compensate and reports an angle of 90. Subtracting gave
-// -180 and turning the device the other way gave -180 as well, so both landscape
-// orientations pinned the correction at its cap instead of levelling. Adding
-// gives 0 for both, which is level.
-export function computeScreenRoll(gravity, screenAngleDeg = 0) {
+// The specification describes the device's natural frame, which would need
+// compensating, but iOS was measured to report gravity already in the frame of
+// the current screen orientation: portrait behaved correctly whichever sign was
+// applied, because there the angle is zero, while both landscape orientations
+// tilted by the full cap in opposite directions, which is what compensating an
+// already-compensated vector does. `none` is therefore the default, with the
+// other two selectable through `?levelCompensate=` so a device can settle it.
+export const ORIENTATION_COMPENSATIONS = Object.freeze({
+  none: 0,
+  add: 1,
+  subtract: -1,
+});
+export const DEFAULT_ORIENTATION_COMPENSATION = 'none';
+
+export function orientationCompensationSign(mode) {
+  const sign = ORIENTATION_COMPENSATIONS[String(mode ?? '').toLowerCase()];
+  return Number.isFinite(sign) ? sign : ORIENTATION_COMPENSATIONS[DEFAULT_ORIENTATION_COMPENSATION];
+}
+
+// The angle of "down" within the screen plane, measured from the screen's own
+// downward direction.
+export function computeScreenRoll(gravity, screenAngleDeg = 0, compensate = DEFAULT_ORIENTATION_COMPENSATION) {
   const x = Number(gravity?.x);
   const y = Number(gravity?.y);
   if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
   // Near-vertical device orientations leave almost nothing in the screen plane,
   // so the angle becomes meaningless rather than merely noisy.
   if (Math.hypot(x, y) < MIN_GRAVITY_MAGNITUDE) return null;
-  const deviceRoll = Math.atan2(x, -y);
+  // Measured from the screen's up axis to world up, both within the screen
+  // plane. Upright portrait reads (0, +G) and must give zero.
+  const deviceRoll = Math.atan2(-x, y);
   const screenAngle = (Number(screenAngleDeg) || 0) * (Math.PI / 180);
-  return wrapAngle(deviceRoll + screenAngle);
+  return wrapAngle(deviceRoll + screenAngle * orientationCompensationSign(compensate));
 }
 
 export function wrapAngle(angle) {
@@ -114,15 +134,26 @@ export function createTiltTracker({
   screen = globalThis.screen,
   now = () => globalThis.performance?.now?.() ?? Date.now(),
   timeConstantMs = DEFAULT_TILT_TIME_CONSTANT_MS,
+  compensate = DEFAULT_ORIENTATION_COMPENSATION,
   onRoll = () => {},
 } = {}) {
   const filter = createRollFilter({ timeConstantMs });
   let running = false;
   let lastRawRoll = null;
+  // Kept so the raw inputs can be read off a device, since which frame a
+  // platform reports gravity in cannot be settled by reasoning about the spec.
+  let lastReading = null;
 
   function handleMotion(event) {
     const gravity = event?.accelerationIncludingGravity;
-    const roll = computeScreenRoll(gravity, screen?.orientation?.angle ?? 0);
+    const screenAngle = screen?.orientation?.angle ?? 0;
+    const roll = computeScreenRoll(gravity, screenAngle, compensate);
+    lastReading = {
+      x: Number(gravity?.x) || 0,
+      y: Number(gravity?.y) || 0,
+      z: Number(gravity?.z) || 0,
+      screenAngle,
+    };
     if (roll === null) return;
     lastRawRoll = roll;
     const smoothed = filter.update(roll, now());
@@ -134,6 +165,7 @@ export function createTiltTracker({
       return running;
     },
     getRawRoll: () => lastRawRoll,
+    getReading: () => lastReading,
     getRoll: () => filter.get(),
     async start() {
       if (running) return 'granted';
