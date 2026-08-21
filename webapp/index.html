@@ -26,6 +26,7 @@
             <button id="generate-depth" data-sync="generate" type="button">Generate Depth</button>
             <button id="save-rgbde" data-sync="save" type="button" disabled>Save RGBDE</button>
             <button id="save-gltf" data-sync="saveGltf" type="button" disabled>Save glTF</button>
+            <button id="publish-mobile" data-sync="publishMobile" type="button" disabled>Publish to Mobile</button>
           </div>
           <p class="hint" data-bind="backendStatus">Depth service: checking…</p>
         </div>
@@ -75,7 +76,7 @@
         </div>
         <div class="control">
           <label for="magnification">Depth Magnification <span data-bind="magnificationValue">1.00</span>x</label>
-          <input id="magnification" data-sync="magnification" type="range" min="0" max="100" step="1" value="0" />
+          <input id="magnification" data-sync="magnification" type="range" min="0" max="300" step="1" value="100" />
         </div>
         <div class="control">
           <label for="z-offset">Model Z Offset <span data-bind="zOffsetValue">0.00</span> m</label>
@@ -115,6 +116,7 @@
           <li>Use <strong>Generate Depth</strong> to run Depth Pro on a JPG/PNG (requires backend).</li>
           <li><strong>Save RGBDE</strong> downloads the currently loaded PNG to your machine.</li>
           <li><strong>Save glTF</strong> exports the current mesh with your adjustments.</li>
+          <li><strong>Publish to Mobile</strong> sends the current baked mesh to <code>/viewer.html</code>.</li>
           <li>Left-drag to rotate (±30° clamp per axis).</li>
           <li>Right-drag to pan the model.</li>
           <li>Mouse wheel to zoom in/out.</li>

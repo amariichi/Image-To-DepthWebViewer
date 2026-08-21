@@ -38,6 +38,8 @@ export class WebXRManager {
     this.referenceSpace = null;
     this.isLookingGlass = false;
     this.lookPromise = null;
+    this.lookModulePromise = null;
+    this.lookingGlassConfig = null;
     this.xrSupported = false;
     this.nativeXR = navigator.xr || null;
     this.xr = this.nativeXR;
@@ -155,10 +157,47 @@ export class WebXRManager {
     this.polyfillActive = false;
   }
 
-  async enterLookingGlass(config = {}) {
+  // Fetches the Looking Glass bundle without installing it.
+  //
+  // This is the whole reason the first attempt used to fail. The module is
+  // loaded from a CDN, and awaiting that fetch inside the click handler spends
+  // the transient user activation that the polyfill needs in order to open its
+  // display window. The second attempt then succeeded only because the module
+  // was already cached. Warming the cache ahead of time keeps the click's
+  // activation intact.
+  //
+  // Loading the module has no global effect; only constructing the polyfill
+  // replaces `navigator.xr`, which would take the plain VR path with it.
+  preloadLookingGlassModule() {
+    if (!this.lookModulePromise) {
+      this.lookModulePromise = import(/* webpackIgnore: true */ LOOKING_GLASS_MODULE)
+        .catch((error) => {
+          console.error('Looking Glass module load failed', error);
+          this.lookModulePromise = null;
+          throw error;
+        });
+    }
+    return this.lookModulePromise;
+  }
+
+  // These values are only a starting point: framing a hologram well depends on
+  // the scene and on being able to see the result, and the Looking Glass renders
+  // its own window with its own controls, so the viewer adjusts there. The
+  // caller decides when a reset is warranted; reapplying on every entry would
+  // silently undo whatever had just been adjusted by hand.
+  applyLookingGlassConfig(config = {}) {
+    const target = this.lookingGlassConfig;
+    if (!target) return;
+    for (const [key, value] of Object.entries(config)) {
+      if (Number.isFinite(value)) target[key] = value;
+    }
+  }
+
+  async enterLookingGlass(config = {}, { resetFrame = false } = {}) {
     this.isLookingGlass = true;
     try {
       await this.ensureLookingGlassPolyfill(config);
+      if (resetFrame) this.applyLookingGlassConfig(config);
     } catch (error) {
       console.error('Looking Glass polyfill failed', error);
       this.onStatus(`Looking Glass setup failed: ${error.message || error}`);
@@ -167,32 +206,47 @@ export class WebXRManager {
       return false;
     }
     this.onStateChange({ lookingGlassReady: true, lookingGlassError: null });
-    return this.enterVR({
+    const sessionOptions = {
       sessionInit: {
         requiredFeatures: ['local-floor'],
         optionalFeatures: ['bounded-floor'],
       },
       label: 'looking-glass',
-    });
+    };
+    if (await this.enterVR(sessionOptions)) return true;
+    // The polyfill is installed by now even if it was not on the first pass, so
+    // one more attempt costs nothing and covers whatever else the vendor flow
+    // needs on a cold start.
+    this.onStatus('Looking Glass did not start; retrying once…');
+    this.isLookingGlass = true;
+    return this.enterVR(sessionOptions);
   }
 
-  async ensureLookingGlassPolyfill(config) {
+  async ensureLookingGlassPolyfill(config = {}) {
     if (!this.lookPromise) {
-      this.lookPromise = import(/* webpackIgnore: true */ LOOKING_GLASS_MODULE)
+      // Resolving the module first keeps the instantiation below synchronous,
+      // so the caller's user activation survives into requestSession.
+      this.lookPromise = this.preloadLookingGlassModule()
         .then((module) => {
           const { LookingGlassWebXRPolyfill, LookingGlassConfig } = module;
           if (!LookingGlassWebXRPolyfill) {
             throw new Error('Looking Glass module missing polyfill export');
           }
-          const merged = { ...(LookingGlassConfig || {}), ...config };
+          // `LookingGlassConfig` is a live singleton whose setters drive the
+          // renderer. Spreading it into a plain object drops those setters, so
+          // the previous code passed a lifeless copy and nothing in it took
+          // effect. The vendor's documented sequence is to assign onto the
+          // singleton and then construct the polyfill.
+          this.lookingGlassConfig = LookingGlassConfig || null;
+          this.applyLookingGlassConfig(config);
           // Instantiate polyfill once. Subsequent calls reuse existing session.
-          new LookingGlassWebXRPolyfill(merged);
+          new LookingGlassWebXRPolyfill();
           this.polyfillActive = true;
           this.xr = navigator.xr || this.xr;
           return true;
         })
         .catch((error) => {
-          console.error('Looking Glass module load failed', error);
+          this.lookPromise = null;
           throw error;
         });
     }

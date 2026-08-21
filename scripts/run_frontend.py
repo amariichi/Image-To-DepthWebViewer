@@ -1,32 +1,31 @@
 #!/usr/bin/env python3
-"""Serve the static webapp directory for local development."""
+"""Serve the editor, mobile viewer, and same-origin scene relay."""
 
 from __future__ import annotations
 
-import http.server
 import os
-import socketserver
+import sys
 from pathlib import Path
 
+import uvicorn
+
 DEFAULT_PORT = int(os.environ.get("RGBDE_FRONTEND_PORT", "5173"))
-WEBAPP_DIR = Path(__file__).resolve().parents[1] / "webapp"
-
-
-class QuietHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
-    def log_message(self, format: str, *args) -> None:  # noqa: A003 - matches base signature
-        pass
+DEFAULT_HOST = os.environ.get("RGBDE_FRONTEND_HOST", "0.0.0.0")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def main() -> None:
-    os.chdir(WEBAPP_DIR)
-    handler = QuietHTTPRequestHandler
-    socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer(("0.0.0.0", DEFAULT_PORT), handler) as httpd:
-        print(f"Serving {WEBAPP_DIR} at http://localhost:{DEFAULT_PORT}")
-        try:
-            httpd.serve_forever()
-        except KeyboardInterrupt:
-            print("\nStopping frontend server…")
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
+    from server.viewer_host import app
+
+    print(f"Serving editor and mobile viewer at http://localhost:{DEFAULT_PORT}")
+    uvicorn.run(
+        app,
+        host=DEFAULT_HOST,
+        port=DEFAULT_PORT,
+        log_level="warning",
+    )
 
 
 if __name__ == "__main__":

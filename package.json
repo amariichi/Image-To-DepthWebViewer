@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "check:js": "node scripts/check-js.mjs",
-    "lint": "eslint webapp/src scripts/check-js.mjs"
+    "lint": "eslint webapp/src scripts/check-js.mjs",
+    "test": "node --test tests/*.test.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.24.0",

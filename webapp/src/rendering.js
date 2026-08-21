@@ -477,6 +477,28 @@ export const mat4 = {
     out[11] = m03 * s + m23 * c;
     return out;
   },
+  rotateZ(matrix, angle) {
+    const c = Math.cos(angle);
+    const s = Math.sin(angle);
+    const m00 = matrix[0];
+    const m01 = matrix[1];
+    const m02 = matrix[2];
+    const m03 = matrix[3];
+    const m10 = matrix[4];
+    const m11 = matrix[5];
+    const m12 = matrix[6];
+    const m13 = matrix[7];
+    const out = new Float32Array(matrix);
+    out[0] = m00 * c + m10 * s;
+    out[1] = m01 * c + m11 * s;
+    out[2] = m02 * c + m12 * s;
+    out[3] = m03 * c + m13 * s;
+    out[4] = m10 * c - m00 * s;
+    out[5] = m11 * c - m01 * s;
+    out[6] = m12 * c - m02 * s;
+    out[7] = m13 * c - m03 * s;
+    return out;
+  },
   scale(matrix, factor) {
     const out = new Float32Array(matrix);
     out[0] *= factor;
@@ -491,6 +513,23 @@ export const mat4 = {
     out[9] *= factor;
     out[10] *= factor;
     out[11] *= factor;
+    return out;
+  },
+  scaleAxes(matrix, factors) {
+    const [x, y, z] = factors;
+    const out = new Float32Array(matrix);
+    out[0] *= x;
+    out[1] *= x;
+    out[2] *= x;
+    out[3] *= x;
+    out[4] *= y;
+    out[5] *= y;
+    out[6] *= y;
+    out[7] *= y;
+    out[8] *= z;
+    out[9] *= z;
+    out[10] *= z;
+    out[11] *= z;
     return out;
   },
   translateInPlace(matrix, translation) {

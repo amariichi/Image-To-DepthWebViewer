@@ -7,11 +7,23 @@ function toFloat32(array) {
   return new Float32Array(array);
 }
 
-function toUint32(array) {
+function toIndexArray(array) {
+  if (array instanceof Uint8Array) {
+    return new Uint8Array(array);
+  }
+  if (array instanceof Uint16Array) {
+    return new Uint16Array(array);
+  }
   if (array instanceof Uint32Array) {
     return new Uint32Array(array);
   }
   return new Uint32Array(array);
+}
+
+function indexComponentType(indices) {
+  if (indices instanceof Uint8Array) return 5121;
+  if (indices instanceof Uint16Array) return 5123;
+  return 5125;
 }
 
 function computeVertexNormals(positions, indices) {
@@ -142,14 +154,24 @@ function createBinaryBuffer() {
   return { append, finalize };
 }
 
-async function encodeImageData(imageData) {
+// The mobile profile ships JPEG because the texture, not the mesh, dominates
+// what a constrained browser must download and hold. A 2048-square photograph
+// is several megabytes as lossless PNG and a few hundred kilobytes as JPEG,
+// while the whole vertex budget is under two megabytes. Desktop exports keep
+// PNG so glTF files opened in other tools stay lossless.
+export const DEFAULT_TEXTURE_MIME_TYPE = 'image/png';
+export const MOBILE_TEXTURE_MIME_TYPE = 'image/jpeg';
+const JPEG_QUALITY = 0.86;
+
+async function encodeImageData(imageData, mimeType = DEFAULT_TEXTURE_MIME_TYPE) {
   if (!imageData) return null;
+  const quality = mimeType === MOBILE_TEXTURE_MIME_TYPE ? JPEG_QUALITY : undefined;
   try {
     if (typeof OffscreenCanvas !== 'undefined') {
       const canvas = new OffscreenCanvas(imageData.width, imageData.height);
       const ctx = canvas.getContext('2d');
       ctx.putImageData(imageData, 0, 0);
-      const blob = await canvas.convertToBlob({ type: 'image/png' });
+      const blob = await canvas.convertToBlob({ type: mimeType, quality });
       const buffer = await blob.arrayBuffer();
       return new Uint8Array(buffer);
     }
@@ -165,7 +187,7 @@ async function encodeImageData(imageData) {
         } else {
           reject(new Error('Canvas toBlob failed.'));
         }
-      }, 'image/png');
+      }, mimeType, quality);
     });
     const buffer = await blob.arrayBuffer();
     return new Uint8Array(buffer);
@@ -229,7 +251,9 @@ export async function createGlbBlob(options) {
     modelMatrix,
     meshName = 'DepthMesh',
     includeUVs = true,
+    includeNormals = true,
     texture = null,
+    textureMimeType = DEFAULT_TEXTURE_MIME_TYPE,
   } = options || {};
 
   if (!mesh || !mesh.positions || !mesh.indices) {
@@ -239,8 +263,8 @@ export async function createGlbBlob(options) {
   const name = meshName && meshName.trim() ? meshName : 'DepthMesh';
 
   const positions = toFloat32(mesh.positions);
-  const indices = toUint32(mesh.indices);
-  const normals = computeVertexNormals(positions, indices);
+  const indices = toIndexArray(mesh.indices);
+  const normals = includeNormals ? computeVertexNormals(positions, indices) : null;
   const uvs = includeUVs && mesh.uvs ? new Float32Array(mesh.uvs) : null;
   const { min, max } = computeBounds(positions);
 
@@ -251,13 +275,13 @@ export async function createGlbBlob(options) {
   const INDEX_TARGET = 34963;
 
   const positionViewIndex = binary.append(positions, { target: POSITION_TARGET });
-  const normalViewIndex = binary.append(normals, { target: POSITION_TARGET });
+  const normalViewIndex = normals ? binary.append(normals, { target: POSITION_TARGET }) : null;
   const uvViewIndex = uvs ? binary.append(uvs, { target: POSITION_TARGET }) : null;
   const indexViewIndex = binary.append(indices, { target: INDEX_TARGET });
 
   let imageBytes = null;
   if (texture && texture.imageData) {
-    imageBytes = await encodeImageData(texture.imageData);
+    imageBytes = await encodeImageData(texture.imageData, textureMimeType);
     if (!imageBytes) {
       throw new Error('Failed to encode texture image.');
     }
@@ -280,13 +304,15 @@ export async function createGlbBlob(options) {
     max,
   });
 
-  accessorIndices.normal = accessors.length;
-  accessors.push({
-    bufferView: normalViewIndex,
-    componentType: 5126,
-    count: normals.length / 3,
-    type: 'VEC3',
-  });
+  if (normalViewIndex !== null) {
+    accessorIndices.normal = accessors.length;
+    accessors.push({
+      bufferView: normalViewIndex,
+      componentType: 5126,
+      count: normals.length / 3,
+      type: 'VEC3',
+    });
+  }
 
   if (uvViewIndex !== null) {
     accessorIndices.uv = accessors.length;
@@ -301,15 +327,17 @@ export async function createGlbBlob(options) {
   accessorIndices.indices = accessors.length;
   accessors.push({
     bufferView: indexViewIndex,
-    componentType: 5125,
+    componentType: indexComponentType(indices),
     count: indices.length,
     type: 'SCALAR',
   });
 
   const attributes = {
     POSITION: accessorIndices.position,
-    NORMAL: accessorIndices.normal,
   };
+  if (normalViewIndex !== null) {
+    attributes.NORMAL = accessorIndices.normal;
+  }
   if (uvViewIndex !== null) {
     attributes.TEXCOORD_0 = accessorIndices.uv;
   }
@@ -328,7 +356,7 @@ export async function createGlbBlob(options) {
 
   const images = imageBytes ? [{
     bufferView: imageViewIndex,
-    mimeType: 'image/png',
+    mimeType: textureMimeType,
   }] : [];
 
   const materials = [{

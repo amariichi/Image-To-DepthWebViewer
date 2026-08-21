@@ -8,12 +8,27 @@ import { computeDeformedBounds, createDeformedPositions } from './mesh-evaluator
 import { createRenderer, mat4 } from './rendering.js';
 import WebXRManager from './webxr.js';
 import XRHintOverlay from './xr-hints.js';
-import { createGlbBlob } from './gltf-exporter.js';
+import {
+  DEFAULT_TEXTURE_MIME_TYPE,
+  MOBILE_TEXTURE_MIME_TYPE,
+  createGlbBlob,
+} from './gltf-exporter.js';
+import {
+  createMobileSceneManifest,
+  mobileDepthSpanForMagnification,
+  publishMobileScene,
+} from './mobile-scene-client.js';
+import {
+  MOBILE_PUBLISH_PROFILES,
+  createMobilePublishMesh,
+  fitMobileTextureSize,
+} from './mobile-publish-mesh.js';
 
 const sourceInput = document.getElementById('source-input');
 const generateButton = document.getElementById('generate-depth');
 const saveButton = document.getElementById('save-rgbde');
 const saveGltfButton = document.getElementById('save-gltf');
+const publishMobileButton = document.getElementById('publish-mobile');
 const canvas = document.getElementById('glCanvas');
 const toggleButton = document.getElementById('toggle-ui');
 const mirrorToggleButton = document.getElementById('toggle-ui-mirror');
@@ -62,9 +77,47 @@ const MAX_Z_OFFSET = 5;
 const MIN_SCALE = 0.05;
 const MAX_SCALE = 25;
 const DESIRED_NEAR = -2.0;
+// The monitor path puts the model two units in front of a camera at the origin.
+// A Looking Glass shows a hologram volume `targetDiam` deep, centred on the
+// reference-space origin, so the same placement leaves the model behind that
+// volume and it has to be dragged forward by hand every session. Landing the
+// nearest surface on the front face of the volume instead lets the model recede
+// into it, which is where a depth relief belongs: nothing pops out past the
+// frame, where a Looking Glass clips it. Anchoring on the focal plane itself
+// overshot by roughly half the volume on a real device.
+// Where the model's nearest surface sits in the Looking Glass reference space.
+// The monitor path uses DESIRED_NEAR, which left the model behind the hologram
+// volume and had to be dragged forward by hand every session. Anchoring 2.0
+// forward of that overshot by a reported 1.3 to 1.5, which puts the wanted
+// position half a unit forward, and that is this value. It is deliberately not
+// derived from `targetDiam`: that is a framing control the viewer adjusts per
+// scene, and it must not silently move the model in depth as well. The Z Offset
+// slider still applies on top.
+const LOOKING_GLASS_MODEL_FRONT_Z = -1.5;
+// Where the hologram volume sits in depth is a property of the display, not of
+// the picture: two very different scenes were both settled at about -0.575 on a
+// Looking Glass Go. Its height and size are not, because a perspective mesh is
+// `rayDirection * depth`, so a scene with distant sky at the top spreads far
+// wider above the axis than below it. Those two are therefore derived from the
+// model's own bounds rather than fixed.
+const LOOKING_GLASS_TARGET_Z = -0.575;
+// The library assumes a standing viewer and looks at 1.6 above the floor, which
+// leaves a model sitting near the origin low in the frame. Two very different
+// scenes were settled at 0.11 and 0.92 on a Looking Glass Go, so the right value
+// is per-scene; zero is simply a far better starting point than 1.6.
+//
+// No formula is offered for it, or for `targetDiam`. Deriving them from the
+// model's bounds was tried and disagreed with both measurements in magnitude
+// and sign, because the bounding box of a perspective reconstruction is
+// dominated by its far cone rather than by the subject -- the same reason the
+// mobile relief fits on UVs instead of on XYZ bounds.
+const LOOKING_GLASS_TARGET_Y = 0;
 const MAG_MIN = 0.1;
 const MAG_MAX = 100;
-const MAG_DEFAULT = 0.5;
+// One is the identity: `shapeDepth` computes `minDepth + magnification *
+// (shaped - minDepth)`, so this is the scene at its own metric depth. The
+// previous 0.5 halved every scene's depth by default for no stated reason.
+const MAG_DEFAULT = 1;
 const FAR_MAX = 1000;
 const FAR_MIN = 0.2;
 const FAR_AUTO_EXPANSION = 10;
@@ -229,6 +282,7 @@ const state = {
     lastX: 0,
     lastY: 0,
   },
+  lookingGlassFrameStale: true,
   centerZ: DEFAULT_CENTER_Z,
   initialScale: 1.0,
   autoTranslationZ: 0.0,
@@ -272,6 +326,9 @@ function init() {
   saveButton.disabled = true;
   if (saveGltfButton) {
     saveGltfButton.disabled = true;
+  }
+  if (publishMobileButton) {
+    publishMobileButton.disabled = true;
   }
   generateButton.disabled = false;
   generateButton.textContent = GENERATE_LABEL_DEFAULT;
@@ -420,6 +477,8 @@ function setCurrentAsset(blob, sourceType) {
   state.asset.blob = blob;
   state.asset.filename = blob && blob.name ? blob.name : 'output_RGBDE.png';
   state.asset.source = sourceType;
+  // A different picture wants its own Looking Glass framing.
+  state.lookingGlassFrameStale = true;
   updateSaveButtonState();
 }
 
@@ -446,9 +505,14 @@ function updateSaveButtonState() {
 }
 
 function updateGlbButtonState() {
-  if (!saveGltfButton) return;
   const meshReady = Boolean(state.mesh && state.rgbde);
-  saveGltfButton.disabled = !meshReady;
+  if (saveGltfButton) {
+    saveGltfButton.disabled = !meshReady;
+  }
+  if (publishMobileButton) {
+    publishMobileButton.disabled = !meshReady;
+  }
+  syncMirrorControls();
 }
 
 function saveCurrentAsset() {
@@ -472,38 +536,94 @@ function getExportBaseName() {
   return 'depth_export';
 }
 
-async function saveCurrentMeshAsGlb() {
+function createMobileTextureImageData(imageData, budget = MOBILE_PUBLISH_PROFILES.full) {
+  const fitted = fitMobileTextureSize(imageData.width, imageData.height, {
+    maxDimension: budget.maxTextureDimension,
+    maxPixels: budget.maxTexturePixels,
+  });
+  if (fitted.width === imageData.width && fitted.height === imageData.height) return imageData;
+  const sourceCanvas = document.createElement('canvas');
+  sourceCanvas.width = imageData.width;
+  sourceCanvas.height = imageData.height;
+  const sourceContext = sourceCanvas.getContext('2d');
+  const targetCanvas = document.createElement('canvas');
+  targetCanvas.width = fitted.width;
+  targetCanvas.height = fitted.height;
+  const targetContext = targetCanvas.getContext('2d');
+  if (!sourceContext || !targetContext) {
+    throw new Error('Canvas 2D is unavailable for mobile texture optimization.');
+  }
+  sourceContext.putImageData(imageData, 0, 0);
+  targetContext.drawImage(sourceCanvas, 0, 0, fitted.width, fitted.height);
+  return targetContext.getImageData(0, 0, fitted.width, fitted.height);
+}
+
+async function createCurrentGlb({
+  modelMatrix,
+  mobileOptimized = false,
+  mobileProfile = MOBILE_PUBLISH_PROFILES.full,
+} = {}) {
   if (!state.mesh) {
-    showStatus('No mesh available to export.', 3000);
-    return;
+    throw new Error('No mesh available to export.');
   }
   if (!state.rgbde || !state.rgbde.textureImage) {
-    showStatus('Texture data is unavailable for export.', 4000);
-    return;
+    throw new Error('Texture data is unavailable for export.');
   }
+  const baseName = getExportBaseName();
+  const textureFileName = `${baseName || 'depth_export'}.png`;
+  // Depth Magnification linearly scales the depth range, and the mobile
+  // manifest already carries that intent as its relief span. Applying it to the
+  // published geometry as well would count it twice, and the second count is
+  // not neutral: squeezing the source range toward the near plane also shifts
+  // the mobile disparity mapping, so the subject ends up with a smaller share
+  // of a smaller budget. Far clipping and any log shaping still apply.
+  const exportOptions = mobileOptimized
+    ? { ...state.options, magnification: 1 }
+    : state.options;
+  const deformedPositions = createDeformedPositions(state.mesh, exportOptions);
+  const mesh = mobileOptimized
+    ? createMobilePublishMesh(
+      { ...state.mesh, positions: deformedPositions },
+      { maxVertices: mobileProfile.maxVertices },
+    )
+    : { ...state.mesh, positions: deformedPositions };
+  const textureImage = mobileOptimized
+    ? createMobileTextureImageData(state.rgbde.textureImage, mobileProfile)
+    : state.rgbde.textureImage;
+  const blob = await createGlbBlob({
+    mesh,
+    modelMatrix,
+    meshName: baseName,
+    includeUVs: Boolean(mesh.uvs),
+    includeNormals: !mobileOptimized,
+    // The texture dominates what a phone must download and hold, so the mobile
+    // profile ships JPEG. Desktop glTF exports stay lossless PNG.
+    textureMimeType: mobileOptimized ? MOBILE_TEXTURE_MIME_TYPE : DEFAULT_TEXTURE_MIME_TYPE,
+    texture: {
+      imageData: textureImage,
+      fileName: textureFileName,
+    },
+  });
+  return {
+    baseName,
+    blob,
+    filename: `${baseName || 'depth_export'}.glb`,
+    profile: {
+      vertexCount: mesh.positions.length / 3,
+      textureWidth: textureImage.width,
+      textureHeight: textureImage.height,
+    },
+  };
+}
+
+async function saveCurrentMeshAsGlb() {
   const buttonRestore = saveGltfButton ? saveGltfButton.disabled : null;
   if (saveGltfButton) {
     saveGltfButton.disabled = true;
   }
   try {
     showStatus('Preparing glTF export…', 0);
-    const modelMatrix = computeModelMatrix();
-    const baseName = getExportBaseName();
-    const textureFileName = `${baseName || 'depth_export'}.png`;
-    const blob = await createGlbBlob({
-      mesh: {
-        ...state.mesh,
-        positions: createDeformedPositions(state.mesh, state.options),
-      },
-      modelMatrix,
-      meshName: baseName,
-      includeUVs: Boolean(state.mesh.uvs),
-      texture: {
-        imageData: state.rgbde.textureImage,
-        fileName: textureFileName,
-      },
-    });
-    const filename = `${baseName || 'depth_export'}.glb`;
+    const { blob, filename } = await createCurrentGlb({ modelMatrix: computeModelMatrix() });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
@@ -523,6 +643,52 @@ async function saveCurrentMeshAsGlb() {
     } else if (saveGltfButton) {
       saveGltfButton.disabled = false;
     }
+  }
+}
+
+async function publishCurrentMeshToMobile() {
+  const buttonRestore = publishMobileButton ? publishMobileButton.disabled : null;
+  if (publishMobileButton) {
+    publishMobileButton.disabled = true;
+  }
+  syncMirrorControls();
+  try {
+    showStatus('Preparing mobile scene…', 0);
+    // Omitting modelMatrix keeps the GLB node transform-free. Mobile placement is
+    // computed independently from the desktop inspection camera and auto-fit state.
+    const { blob, filename, profile } = await createCurrentGlb({ mobileOptimized: true });
+    showStatus('Preparing mobile fallback scene…', 0);
+    const fallback = await createCurrentGlb({
+      mobileOptimized: true,
+      mobileProfile: MOBILE_PUBLISH_PROFILES.reduced,
+    });
+    const manifest = createMobileSceneManifest({
+      sourceName: state.asset.filename,
+      depthSpan: mobileDepthSpanForMagnification(state.options.magnification),
+      // The capture field of view lets the mobile viewer report how much the
+      // relief is exaggerated relative to the scene's real proportions. It is
+      // reporting only; the presentation itself never depends on it.
+      captureFovDeg: state.meshConfig.geomFov,
+    });
+    const result = await publishMobileScene({
+      blob,
+      reducedBlob: fallback.blob,
+      filename,
+      manifest,
+    });
+    showStatus(
+      `Published optimized ${filename} to mobile (revision ${result.revision}, ${profile.vertexCount.toLocaleString()} vertices, ${profile.textureWidth}×${profile.textureHeight}, ${(blob.size / (1024 * 1024)).toFixed(1)} MB; fallback ${(fallback.blob.size / (1024 * 1024)).toFixed(1)} MB).`,
+      5500,
+    );
+  } catch (error) {
+    console.error(error);
+    const message = error && error.message ? error.message : 'Failed to publish mobile scene.';
+    showStatus(message, 5000);
+  } finally {
+    if (publishMobileButton && buttonRestore !== null) {
+      publishMobileButton.disabled = buttonRestore;
+    }
+    updateGlbButtonState();
   }
 }
 
@@ -753,6 +919,11 @@ function attachUIListeners() {
   if (saveGltfButton) {
     saveGltfButton.addEventListener('click', () => {
       void saveCurrentMeshAsGlb();
+    });
+  }
+  if (publishMobileButton) {
+    publishMobileButton.addEventListener('click', () => {
+      void publishCurrentMeshToMobile();
     });
   }
   toggleButton.addEventListener('click', () => {
@@ -1522,6 +1693,16 @@ function setupXR() {
       const prevActive = state.xr.active;
       const prevMode = state.xr.mode;
       state.xr = { ...state.xr, ...updates };
+      if (state.xr.mode !== prevMode) {
+        // Looking Glass places the model relative to its hologram volume.
+        invalidateModelMatrix();
+        if (state.xr.mode === 'looking-glass') {
+          showStatus(
+            `Looking Glass: model front at z ${LOOKING_GLASS_MODEL_FRONT_Z.toFixed(2)}; frame ${describeLookingGlassFrame()}`,
+            5000,
+          );
+        }
+      }
       if (!state.xr.supported && !state.xr.active) {
         state.xr.status = 'WebXR unavailable';
         updateBinding('xrStatus', state.xr.status);
@@ -1570,6 +1751,14 @@ function setupXR() {
       handleEnterVr();
     }
   });
+
+  // Fetching the Looking Glass bundle inside the click handler spends the user
+  // activation its display window needs, which is why the first attempt always
+  // failed and the second always worked. Warming it beforehand costs nothing and
+  // has no global effect until the polyfill is actually constructed.
+  const warmLookingGlass = () => { void xrManager.preloadLookingGlassModule(); };
+  enterLookingGlassButton.addEventListener('pointerenter', warmLookingGlass, { once: true });
+  enterLookingGlassButton.addEventListener('pointerdown', warmLookingGlass, { once: true });
 
   enterLookingGlassButton.addEventListener('click', () => {
     if (state.xr.active && state.xr.mode === 'looking-glass') {
@@ -1626,10 +1815,58 @@ async function handleEnterVr() {
   }
 }
 
+// Where content sits inside a Looking Glass frame is the display's own business,
+// not the model's: the polyfill frames a volume of `targetDiam` around
+// `targetX/Y/Z` and renders it with `fovy`. Nudging the model instead only moves
+// it within a frame that is already fixed, which is why hand-tuned model offsets
+// had no visible effect. These are exposed on the URL so the framing can be
+// settled against real hardware, for example
+// `?lgTargetY=-0.5&lgTargetDiam=4`.
+const LOOKING_GLASS_CONFIG_KEYS = ['targetX', 'targetY', 'targetZ', 'targetDiam', 'fovy'];
+// The library's own default size, restated here so that resetting the frame for
+// a new picture restores every value the viewer may have moved, not just the
+// ones this project overrides.
+const LOOKING_GLASS_TARGET_DIAM = 2;
+
+function lookingGlassFrameDefaults() {
+  return {
+    targetX: 0,
+    targetY: LOOKING_GLASS_TARGET_Y,
+    targetZ: LOOKING_GLASS_TARGET_Z,
+    targetDiam: LOOKING_GLASS_TARGET_DIAM,
+  };
+}
+
+function lookingGlassConfigFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const config = {};
+  for (const key of LOOKING_GLASS_CONFIG_KEYS) {
+    const raw = params.get(`lg${key.charAt(0).toUpperCase()}${key.slice(1)}`);
+    if (raw === null) continue;
+    const value = Number(raw);
+    if (Number.isFinite(value)) config[key] = value;
+  }
+  return config;
+}
+
 async function handleEnterLookingGlass() {
   if (!xrManager) return;
-  const success = await xrManager.enterLookingGlass();
-  if (!success) {
+  // A new picture gets the starting frame back, because the right framing is
+  // strongly scene-dependent and carrying the previous one over is almost
+  // always wrong. Re-entering with the same picture keeps whatever was just
+  // adjusted in the Looking Glass window.
+  const resetFrame = state.lookingGlassFrameStale !== false;
+  // Only the depth of the hologram volume generalises across scenes; two very
+  // different pictures settled within 0.03 of each other on a Looking Glass Go.
+  // Its height and size did not, varying by a factor of two and more, and an
+  // attempt to derive them from the model's bounds disagreed with the measured
+  // values in both magnitude and sign. They are left to the URL rather than
+  // guessed at.
+  const overrides = { ...lookingGlassFrameDefaults(), ...lookingGlassConfigFromUrl() };
+  const success = await xrManager.enterLookingGlass(overrides, { resetFrame });
+  if (success) {
+    state.lookingGlassFrameStale = false;
+  } else {
     showStatus('Looking Glass session could not start.', 4000);
   }
 }
@@ -1705,13 +1942,25 @@ function updateMirrorVisibility() {
   }
 }
 
-function computeModelMatrix() {
-  if (!state.render.modelMatrixDirty) {
-    return state.render.modelMatrix;
-  }
+function describeLookingGlassFrame() {
+  const config = xrManager?.lookingGlassConfig;
+  if (!config) return 'targetDiam 3 (defaults)';
+  const parts = LOOKING_GLASS_CONFIG_KEYS.map((key) => {
+    const value = Number(config[key]);
+    return Number.isFinite(value) ? `${key} ${value.toFixed(2)}` : null;
+  }).filter(Boolean);
+  return parts.length ? parts.join(', ') : 'defaults';
+}
 
-  const model = state.render.modelMatrix;
-  const translateZ = state.controls.translationZ + state.autoTranslationZ;
+function lookingGlassAutoTranslationZ() {
+  const info = state.displayBounds;
+  if (!info) return state.autoTranslationZ;
+  return clamp(LOOKING_GLASS_MODEL_FRONT_Z - info.maxZ, -20, 20);
+}
+
+function buildModelMatrix(autoZ, into = mat4.identity()) {
+  const model = into;
+  const translateZ = state.controls.translationZ + autoZ;
   mat4.identityInto(model);
   mat4.translateInPlace(model, [state.controls.translationX, state.controls.translationY, translateZ]);
   mat4.translateInPlace(model, [0, 0, state.pivotZ]);
@@ -1719,8 +1968,19 @@ function computeModelMatrix() {
   mat4.rotateXInPlace(model, state.controls.rotationX);
   mat4.scaleInPlace(model, state.controls.scale);
   mat4.translateInPlace(model, [0, 0, -state.pivotZ]);
-  state.render.modelMatrixDirty = false;
   return model;
+}
+
+function computeModelMatrix() {
+  if (!state.render.modelMatrixDirty) {
+    return state.render.modelMatrix;
+  }
+  const autoZ = state.xr.mode === 'looking-glass'
+    ? lookingGlassAutoTranslationZ()
+    : state.autoTranslationZ;
+  buildModelMatrix(autoZ, state.render.modelMatrix);
+  state.render.modelMatrixDirty = false;
+  return state.render.modelMatrix;
 }
 
 function renderScene() {
@@ -1899,8 +2159,15 @@ function formatFarClip(value) {
   return value.toFixed(2);
 }
 
+// The slider is logarithmic across 0.1 to 100, so 1 sits a third of the way
+// along. With a hundred steps that is position 33.33, which no step can reach:
+// the neighbours are 0.98 and 1.05, and the one value that means "the scene at
+// its own metric depth" was not selectable. Three hundred steps put it exactly
+// on 100, and give finer control everywhere else as a side effect.
+const MAG_SLIDER_STEPS = 300;
+
 function sliderToMagnification(sliderValue) {
-  const t = clamp(sliderValue, 0, 100) / 100;
+  const t = clamp(sliderValue, 0, MAG_SLIDER_STEPS) / MAG_SLIDER_STEPS;
   const ratio = MAG_MAX / MAG_MIN;
   return MAG_MIN * Math.pow(ratio, t);
 }
@@ -1909,7 +2176,7 @@ function magnificationToSlider(magnification) {
   const mag = clamp(magnification, MAG_MIN, MAG_MAX);
   const ratio = Math.log(MAG_MAX / MAG_MIN);
   const t = Math.log(mag / MAG_MIN) / ratio;
-  return Math.round(t * 100);
+  return Math.round(t * MAG_SLIDER_STEPS);
 }
 
 function sliderToFarClip(sliderValue) {
