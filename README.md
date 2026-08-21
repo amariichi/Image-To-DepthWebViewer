@@ -54,43 +54,40 @@ This repository now ships a two-part toolchain: a WebGL viewer in `webapp/` and 
 
 <img width="270" height="480" alt="Head-tracked mobile viewer running on an iPhone" src="https://github.com/user-attachments/assets/2d58b740-3433-4033-a32a-1b32f11c906f" />
 
-The desktop editor can publish its current baked scene to a separate, touch-friendly viewer for iPhone and iPad:
+Publish the scene you are looking at to a phone or tablet, then use its front camera to move the viewpoint: the display behaves like a window onto a miniature sitting just behind the glass.
 
-1. Open the editor at `http://localhost:5173/`, load or generate an RGBDE scene, finish the reconstruction/depth adjustments, and press **Publish to Mobile**.
-2. On the phone or tablet, open the same frontend host with `/viewer.html` appended—for example, `https://your-frontend-address/viewer.html`. Camera access requires a secure context. `http://localhost` is allowed on the same device, but an ordinary `http://` LAN address generally is not; use an HTTPS reverse proxy or your existing trusted HTTPS mapping to port 5173.
-3. Press **Start 3D**, hold the device steady while the centered pose calibrates, then move your head to look around the baked scene. **Recenter** repeats the short calibration without reloading the model. Landscape is recommended for the widest tracked-window effect. Current iPhone testing found that Safari and iOS Chrome need the same horizontal correction, so both now start in that direction. If a device still runs backwards, press **Flip L/R**; that choice is saved in the browser.
-4. One-finger drag rotates within ±30°. A two-finger pinch scales the miniature uniformly, depth included, because a miniature magnifies uniformly: scaling the image plane alone would flatten it into an anamorphic card exactly when you zoom in to look closer. Moving two fingers together pans. Touch remains available when camera permission is denied or tracking is stopped.
-5. Zooming in re-targets the depth budget at whatever you are looking at. Whatever is on screen is pulled forward onto the glass, and once the gesture settles the relief is rebuilt over just the visible depth range. This is what makes distant detail inspectable: in a room with a person at 1 m and balloons on a wall at 4 m, the balloons hold under one percent of the scene's depth budget and stay flat however far you zoom, but rebuilt over their own range they receive nearly half of it. Zooming back out restores the whole scene.
+1. In the editor, load or generate an RGBDE scene, adjust it, and press **Publish to Mobile**.
+2. On the phone or tablet, open the same host with `/viewer.html` appended. The camera needs a secure context, so `http://localhost` works on the same device but a plain `http://` LAN address usually does not — put an HTTPS proxy in front of port 5173.
+3. Press **Start 3D** and hold still while it calibrates. iOS asks for camera and motion access; refusing motion costs only the levelling, and a **Level** button appears so you can grant it later.
+4. Move your head to look around. **Recenter** re-calibrates without reloading. **Flip L/R** reverses the horizontal direction if a device reports its camera the other way round, and remembers the choice.
 
-The viewer draws only when the picture would actually differ. A new eye pose arrives twenty times a second, so redrawing sixty times a second spent two frames in three on an identical image, each carrying a quarter of a million vertices and a multisample resolve. Every input that moves the picture is compared against what was last drawn, with thresholds below one pixel of on-screen movement, so nothing that could have been seen is skipped: an idle view draws nothing at all, and a moving one draws once per pose. The camera and the display dominate what is left, and neither can be avoided while tracking a face.
+Touch works with or without the camera:
 
-Front-camera frames and face landmarks are processed locally in the mobile browser and are never published to the PC relay. The viewer does not request gyroscope, DeviceOrientation, or DeviceMotion access. It downloads the pinned MediaPipe Tasks Vision runtime/model on first use, but does not upload camera data to that provider. Add `?debug=1` to the viewer URL to show the local camera preview, eye pose, render/inference cadence, camera resolution, first-pose latency, the resolved physical screen size and viewing geometry, and sliders for viewing distance, relief depth, and disparity blend.
+| Gesture | Effect |
+| --- | --- |
+| One finger | Rotate, within ±30° |
+| Two fingers, pinch | Scale the miniature, depth included |
+| Two fingers, move together | Pan |
 
-The mobile projection is intentionally separate from the desktop, SBS, WebXR, and Looking Glass render paths. The published GLB already contains the desktop depth adjustments. On mobile, its baked depth becomes a bounded, screen-fitted relief: UVs define the image rectangle, the nearest sample is anchored to the glass plane, and all other samples stay behind it. This prevents very distant sky or background samples from shrinking the foreground into the tip of a large pyramid.
+Zooming in also re-aims the depth: whatever is on screen is brought forward onto the glass and the relief is rebuilt over just the depth range in view, so distant detail becomes inspectable instead of staying flat. Zooming back out restores the whole scene.
 
-Source depth is mapped by disparity, meaning the relief position is proportional to `1 / distance` rather than to distance itself. Equal steps of `1 / distance` are equal steps of perceived depth, and they match the pinhole reconstruction the mesh came from. This is what keeps a near subject solid in a scene whose far field is thousands of times more distant: for a coastal portrait with a subject at 2 m and a horizon at 10 km, disparity gives the subject about 13% of the relief budget where a linear mapping would give it 0.003%. For a macro or microscope subject with almost no depth ratio the two mappings agree, so no separate mode is needed. Depth outliers are rejected at both ends of the range and flattened onto the near or far plane rather than dropped, so the mesh stays a closed sheet.
+**Depth Magnification** in the editor sets how deep the published relief is (default `1.0`, range `0.2`–`1.8`, where one unit is half the screen's physical height). Everything else adapts on the device: eye distance comes from a table of physical screen sizes, head position from MediaPipe's metric face pose, and the horizon stays level using gravity.
 
-Triangles that straddle a depth discontinuity are deliberately kept. Where the source has no data behind an occluding edge, the stretched textured triangle is a more plausible reconstruction than a hole, so the mesh is never cut.
+Camera frames and face landmarks never leave the phone. The viewer downloads the pinned MediaPipe runtime and model on first use and nothing else; no gyroscope is requested, and motion access is used only to keep the view upright.
 
-**Depth Magnification** controls the relief span at publish time; the default is `1.0` world units with a bounded range of `0.2`–`1.8`. One world unit is half the physical screen height, so the default places a miniature about half a screen height deep behind the glass — the thickness at which a typical near subject's relief is proportional to its size on screen, which is what makes it read as a solid object rather than a flat card.
+**Publish to Mobile** sends a smaller asset than **Save glTF**: a JPEG texture capped at 2048 px and two megapixels, a resampled grid, and no normals. A reduced build is uploaded alongside it, and the viewer falls back to that only if the full one fails to load. The relay keeps one scene in memory; restarting the frontend clears it.
 
-The off-axis projection uses a cyclopean eye at the midpoint between the detected eyes. For eye distance `E`, a point `D` behind the glass projects as `x_screen = X × E / (E + D)`: a point on the glass stays fixed when the face approaches, while a farther point moves slightly toward the image center. The model stays square-on to the glass and never rotates toward the viewer; the vanishing point of depth-parallel lines already follows the eye, because that is what an off-axis frustum does. A normal phone or tablet cannot show a separate correct perspective to each physical eye, so close, strongly tilted, two-eye viewing cannot be fully binocular-correct. Viewing roughly square-on or briefly closing one eye gives the most geometrically consistent result.
+Add `?debug=1` to the viewer URL for live readings and sliders for viewing distance, relief depth and depth allocation. These can also be pinned on the URL:
 
-At the calibrated pose the rendered image reproduces the source image exactly. Every vertex sits on the ray from the calibrated eye through its own image-plane anchor, so projecting from that eye returns each vertex to its original pixel regardless of how deep the relief is or how depth was mapped. Both the relief span and the disparity blend can therefore be changed freely without disturbing what you see before moving.
+| Parameter | Effect |
+| --- | --- |
+| `?flip=0` / `?flip=1` | Force the horizontal tracking direction |
+| `?level=0` | Turn off keeping the view upright |
+| `?levelFlip=1` | Reverse the levelling direction |
+| `?delegate=cpu` / `gpu` | Force which processor runs the face model |
 
-Rolling the device keeps the miniature upright. The relief otherwise shares the screen's up axis, so the whole scene rolls with the device, which a real object behind glass does not do. `webapp/src/device-tilt.js` takes the direction of gravity from `accelerationIncludingGravity` and uses only its angle within the screen plane, which is drift-free because it is referenced to gravity rather than to a heading. The correction is halved and capped at 18 degrees, because the scene is a picture with edges that a full counter-rotation would swing into view. iOS asks for motion access. It is requested in the same tap that starts the camera, and crucially before that tap's work is awaited: starting the camera also fetches the face model, and awaiting it first spends the user activation the request needs, which is why a home-screen app — always a cold start — would silently never prompt. If access is still not granted, a **Level** button appears so it can be asked for again without restarting the camera. Refusing it costs only the levelling. Add `?level=0` to switch it off or `?levelFlip=1` to reverse it if a device reports gravity the other way round.
+An ordinary panel shows both eyes the same image, so viewing square-on, or with one eye, is where the geometry is most convincing. Triangles stretched across a depth edge are kept on purpose: where the source has nothing behind an occluding edge, a smeared surface reads better than a hole.
 
-Head tracking is metric. MediaPipe's facial transformation matrix reports the head position in centimetres, and the viewer converts that into world units using the device's real screen size, so there is no tuned gain anywhere in the path. The virtual screen is two world units tall and fills the canvas, so one world unit is half the canvas's physical height. Because a browser cannot report physical size, `webapp/src/device-metrics.js` carries a small table (iPhone 17 and iPad mini A17 Pro) and falls back to a density estimate for unknown devices; a measured value stored in the browser always wins. Devices that do not supply the metric matrix fall back to the older landmark-ratio estimate and its gains (`0.325`, or `0.65` on iOS Chrome).
-
-**Publish to Mobile** creates a memory-bounded mobile asset rather than sending the full desktop export. The texture is the dominant consumer, not the mesh: at a quarter-million vertices the geometry is a few megabytes, while a 2048-square texture is 16 MB once decoded. So the mobile profile ships the texture as JPEG rather than lossless PNG, limits it to 2048 pixels on either side and two million pixels total, and the viewer decodes it with `createImageBitmap` and releases the bitmap as soon as it reaches the GPU. The grid is resampled to at most 262,144 vertices with 32-bit indices, which WebGL2 draws without an extension, and normals the unlit mobile renderer never consumes are omitted. Normal **Save glTF** exports keep their original mesh, normals, 32-bit indices, and lossless PNG texture.
-
-Publishing also uploads a smaller fallback build alongside the full one. No browser API on iOS reports available memory, so the viewer cannot predict whether a device will cope; instead it loads the full build and requests the reduced one only after that has genuinely failed, reporting `Scene ready (reduced build)` when it does.
-
-The viewer does not request device orientation. Screen rotation cancels any active touch contacts, rebuilds the relief for the new aspect ratio, and requests recentering while preserving the accumulated touch pose.
-
-Looking Glass framing is the display's own business rather than the model's: the polyfill frames a volume of `targetDiam` around `targetX/Y/Z` and renders it with `fovy`, so moving the model only shifts it inside a frame that is already fixed. How that frame should sit depends on the scene and on seeing the result — two pictures settled at heights of 0.11 and 0.92 and at sizes of 2.00 and 0.90 — so fit it in the Looking Glass window itself, using its own controls together with the editor's **Z Offset** slider. The editor only sets a starting point, and it does so when you load a picture: re-entering with the same picture keeps whatever you just adjusted, while loading a different one restores the starting frame, since framing that suits one scene rarely suits another. Rotating the model out of view is a separate matter — that is the model transform, which loading a picture resets and which double-clicking the canvas resets at any time, including during a session. That starting point uses a height of 0 rather than the library's 1.6, which assumes a standing viewer and leaves a model near the origin low in frame, and a depth of -0.575 measured on a Looking Glass Go. Any of `targetX/Y/Z`, `targetDiam` and `fovy` can be pinned on the editor URL for a repeatable starting point, for example `?lgTargetY=0.92&lgTargetDiam=0.9`, and the live values are reported when a session starts.
-
-The port-5173 relay keeps only the latest published scene in memory. Restarting the frontend clears it; press **Publish to Mobile** again. Publishing a new scene replaces the current revision and open viewers pick it up automatically.
 
 ### WebXR / XR playback
 - The control panel now includes **Enter VR** and **Enter Looking Glass** buttons (requires a WebXR-enabled Chromium-based browser on HTTPS/localhost).
@@ -174,41 +171,40 @@ The port-5173 relay keeps only the latest published scene in memory. Restarting 
 
 <img width="270" height="480" alt="Head-tracked mobile viewer running on an iPhone" src="https://github.com/user-attachments/assets/2d58b740-3433-4033-a32a-1b32f11c906f" />
 
-PC エディタで調整したシーンを、iPhone / iPad 向けのタッチ対応ビューアへ明示的に Publish できます。
+いま見ているシーンをスマホ／タブレットへ Publish し、前面カメラで視点を動かします。画面がガラス窓のようになり、その奥にミニチュアが置かれているように見えます。
 
-1. PC で `http://localhost:5173/` を開き、RGBDE を読み込むか生成して、再構成・デプス調整を終えてから **Publish to Mobile** を押します。
-2. スマホ／タブレットでは、同じフロントエンドホストの末尾に `/viewer.html` を付けて開きます（例: `https://your-frontend-address/viewer.html`）。カメラにはセキュアコンテキストが必要です。同じ端末上の `http://localhost` は例外ですが、通常の LAN 内 `http://` アドレスでは許可されないため、ポート 5173 に向けた HTTPS リバースプロキシまたは既存の信頼済み HTTPS マッピングを使用してください。
-3. **Start 3D** を押し、正面姿勢の短いキャリブレーション中は端末を安定させます。その後、頭を動かすと焼き込み済みシーンの視点が変化します。**Recenter** はモデルを再読込せずにキャリブレーションだけをやり直します。今回の iPhone 実機確認では Safari と iOS Chrome に同じ左右補正が必要だったため、両方を同じ初期方向にしました。端末によってまだ逆なら **Flip L/R** を押してください。この選択はブラウザ内に保存されます。Tracked Window の効果を広く感じるには横画面がおすすめです。
-4. 1本指ドラッグは ±30° 以内の回転です。2本指ピンチはミニチュア全体を奥行きも含めて等方拡大します。ミニチュアは等方に拡大するものであり、画像面だけを拡大すると、近寄って見たいときにこそモデルが平たい板になってしまうためです。2本指を一緒に動かす操作は平行移動です。カメラを拒否／停止してもタッチ操作は使えます。
-5. ズームすると深度バジェットが「今見ているもの」に振り直されます。画面内の最近点がガラス面へ引き寄せられ、操作が落ち着いた時点で可視範囲の深度だけで relief を組み直します。奥のものを立体的に見るにはこれが必須です。手前に人物（1m）、奥の壁に風船（4m）という室内なら、風船自身の奥行きはシーン全体の深度バジェットの1%未満しかないため、いくらズームしても平らなままでした。可視範囲で組み直すと風船がバジェットのほぼ半分を受け取ります。ズームを戻せば全景に復帰します。
+1. エディタで RGBDE を読み込むか生成し、調整してから **Publish to Mobile** を押します。
+2. スマホ／タブレットで同じホストの末尾に `/viewer.html` を付けて開きます。カメラにはセキュアコンテキストが必要なので、同一端末の `http://localhost` は使えますが、LAN 内の素の `http://` では通常使えません。ポート 5173 の前段に HTTPS プロキシを置いてください。
+3. **Start 3D** を押し、キャリブレーション中は静止します。iOS はカメラとモーションの許可を求めます。モーションを拒否しても失われるのは水平維持だけで、あとから許可できるよう **Level** ボタンが現れます。
+4. 頭を動かすと視点が変わります。**Recenter** は再読込せずにキャリブレーションをやり直します。**Flip L/R** は左右方向を反転し（端末がカメラ座標を逆に報告する場合）、選択は保存されます。
 
-描画は「絵が実際に変わるとき」だけ行います。視点姿勢の更新は毎秒20回なので、毎秒60回描くと3フレームに2フレームは同じ絵を描き直すことになり、そのたびに25万頂点とマルチサンプル解決のコストがかかっていました。絵を動かす入力すべてを直前に描いた状態と比較し、しきい値は画面上1ピクセル未満の移動に設定しているため、見える変化を取りこぼすことはありません。静止していれば1枚も描かず、動いていれば姿勢1回につき1枚です。残る消費はカメラと画面が支配的で、顔を追跡する以上どちらも避けられません。
+タッチ操作はカメラの有無にかかわらず使えます。
 
-前面カメラ映像と顔ランドマークはモバイルブラウザ内だけで処理され、PC のシーン relay には送信されません。ジャイロ、DeviceOrientation、DeviceMotion の許可も要求しません。初回は固定バージョンの MediaPipe Tasks Vision とモデルをダウンロードしますが、カメラデータをその提供元へアップロードする処理はありません。URL に `?debug=1` を付けると、端末内カメラプレビュー、eye pose、描画／推論 cadence、実カメラ解像度、最初の pose までの時間に加えて、判定された画面実寸と視距離ジオメトリ、そして視距離・relief 厚・disparity blend の調整スライダが表示されます。
+| 操作 | 効果 |
+| --- | --- |
+| 1本指 | ±30° 以内の回転 |
+| 2本指ピンチ | ミニチュアを奥行きごと拡大縮小 |
+| 2本指を一緒に動かす | 平行移動 |
 
-モバイル投影は Desktop / SBS / WebXR / Looking Glass の描画経路から分離されています。公開 GLB には PC 側のデプス調整がすでに焼き込まれています。モバイルではそのデプスを、画面内に収まる有限厚の relief に変換します。UV が画像枠を決め、最近点をガラス面に固定し、残りをすべて奥側に配置するため、空などの超遠景によって手前が四角錐の頂点のように小さくなることを防ぎます。ソース深度は disparity（`1 / 距離` に比例）でマッピングします。`1 / 距離` の等間隔が知覚される奥行きの等間隔であり、元のピンホール再構成とも整合するためです。これにより、遠景が数千倍遠いシーンでも手前の被写体が立体として残ります。被写体2m・水平線10kmの海岸ポートレイトの場合、disparity なら被写体が relief バジェットの約13%を得ますが、従来の線形マッピングでは0.003%しか得られませんでした。マクロや顕微鏡写真のように深度比が小さい被写体では両者はほぼ一致するので、モード切り替えは不要です。深度の外れ値は近側・遠側の両方で除外し、破棄せず近／遠平面に平坦化するため、メッシュは閉じたシートのまま保たれます。
+ズームすると深度の割り当ても追従します。画面内のものが手前のガラス面へ引き寄せられ、可視範囲の深度だけで relief が組み直されるので、奥のものが平らなままにならず立体的に見られます。ズームを戻せば全景に復帰します。
 
-深度が不連続な箇所をまたぐ三角形は意図的に残します。遮蔽の裏側にはデータが存在しないため、引き伸ばされたテクスチャ付き三角形のほうが穴よりも妥当な推定であり、メッシュを切ることはしません。
+エディタの **Depth Magnification** が公開時の relief の厚みを決めます（既定 `1.0`、範囲 `0.2`〜`1.8`。1 単位は画面の物理高さの半分）。それ以外は端末側で自動調整されます ── 視距離は画面実寸のテーブルから、頭部位置は MediaPipe の実寸フェイスポーズから、水平は重力から求めます。
 
-公開時の **Depth Magnification** が relief の厚みに反映されます。標準は `1.0` world unit、範囲は `0.2`〜`1.8` です。1 world unit は画面の物理高さの半分なので、標準ではガラスの奥に画面高さの約半分の厚みのミニチュアが置かれます。これは手前の被写体の凹凸が画面上の見かけの大きさに対して実物と同じ比率になる厚みで、板ではなく立体として見えるための条件です。
+カメラ映像と顔ランドマークは端末外へ出ません。初回に固定バージョンの MediaPipe とモデルを取得するだけです。ジャイロは要求せず、モーション許可は水平維持にのみ使います。
 
-off-axis 投影は左右の目の中点にある仮想的な単眼（cyclopean eye）を使います。ガラスから眼までの距離を `E`、ガラスより奥の距離を `D` とすると、点は `x_screen = X × E / (E + D)` に投影されます。このため顔を近づけてもガラス面の点は不変で、遠い点だけが僅かに画像中央へ縮むのが本来の挙動です。モデルは常にガラス面に正対し、視点に向かって回転することはありません。奥行き方向に伸びる直線の消失点は off-axis 錐台の性質としてすでに眼の位置に追従します。通常のスマホ／タブレットは左右の物理的な目へ別々の正しい像を同時表示できないので、近距離・強い傾斜・両眼視を完全な立体として一致させることはできません。画面を概ね正対させるか、片目で確認すると幾何学的には最も整合します。
+**Publish to Mobile** は **Save glTF** より小さいデータを送ります（JPEG テクスチャ・一辺2048px かつ200万画素以下、再サンプリングしたグリッド、法線なし）。同時に縮小版もアップロードし、完全版の読み込みに失敗したときだけそちらへ切り替えます。relay が保持するのは1シーンのみで、フロントエンドを再起動すると消えます。
 
-キャリブレーション姿勢では、描画結果は元画像と厳密に一致します。各頂点は「キャリブレーション眼からその頂点の画像面アンカーへ向かう光線」の上に置かれるため、その眼から投影すると relief の厚みや深度マッピングに関係なく元の画素位置へ戻ります。したがって relief 厚も disparity blend も、動く前に見える絵を乱すことなく自由に変更できます。
+URL に `?debug=1` を付けると、実測値の表示と、視距離・relief 厚・深度配分のスライダーが出ます。以下は URL で固定できます。
 
-端末をロールさせてもミニチュアは垂直を保ちます。relief は本来スクリーンの上方向を共有しているため、そのままだと端末と一緒にシーンごと傾きます（ガラスの向こうの実物はそうなりません）。`webapp/src/device-tilt.js` が `accelerationIncludingGravity` から重力方向を取り、その画面内角度だけを使います。方位ではなく重力を基準にするのでドリフトしません。補正量は半分かつ 18 度で頭打ちにしています。シーンには縁があり、完全に打ち消すと画像の隅が画面内に入ってくるためです。iOS はモーション許可を求めます。カメラ開始と同じタップの中で、かつ**そのタップの処理を await する前に**要求します。カメラ開始は顔モデルの取得も伴うため、先に await するとユーザー操作の有効期間を使い切ってしまい、許可ダイアログが出ないまま終わります（毎回コールドスタートになるホーム画面アプリで顕在化しました）。それでも許可されなかった場合は **Level** ボタンが現れ、カメラを再起動せずに再要求できます。拒否しても失われるのは水平維持だけです。`?level=0` で無効化、`?levelFlip=1` で反転できます（端末が重力を逆向きに報告する場合）。
+| パラメータ | 効果 |
+| --- | --- |
+| `?flip=0` / `?flip=1` | 左右方向を強制 |
+| `?level=0` | 水平維持を無効化 |
+| `?levelFlip=1` | 水平維持の回転方向を反転 |
+| `?delegate=cpu` / `gpu` | 顔モデルを実行するプロセッサを強制 |
 
-ヘッドトラッキングは実寸ベースです。MediaPipe の facial transformation matrix が頭部位置をセンチメートル単位で返すので、ビューアは端末の実画面サイズを使って world unit へ変換します。経路のどこにも調整ゲインはありません。仮想スクリーンは高さ 2 world unit でキャンバス全体に対応するため、1 world unit はキャンバスの物理高さの半分です。ブラウザは物理サイズを取得できないので、`webapp/src/device-metrics.js` が小さなテーブル（iPhone 17 / iPad mini A17 Pro）を持ち、未知の端末には密度からの推定値を使います。ブラウザに保存された実測値があれば常にそちらが優先されます。matrix を返さない端末では従来のランドマーク比推定とそのゲイン（`0.325`、iOS Chrome は `0.65`）にフォールバックします。
+通常のパネルは両眼に同じ像を出すため、**画面を正対させるか片目で見る**と幾何学的に最も整合します。深度が不連続な箇所で引き伸ばされる三角形は意図的に残しています。遮蔽の裏側にデータが無い以上、穴より引き伸ばされた面のほうが妥当な推定だからです。
 
-**Publish to Mobile** は Desktop 用の完全な glTF とは別に、メモリ上限を設けたモバイル専用データを作ります。支配的なのはメッシュではなくテクスチャです。25万頂点でもジオメトリは数MBですが、2048角のテクスチャは展開後16MBになります。そこでモバイルプロファイルはテクスチャを可逆PNGではなくJPEGで送り、一辺2048px以下・合計200万画素以下に制限し、ビューア側は `createImageBitmap` でデコードして GPU に載った時点で即座に解放します。グリッドは最大262,144頂点に再サンプリングし、WebGL2 が拡張なしで扱える32bit index を使い、モバイルの unlit 描画で使わない法線は省きます。通常の **Save glTF** は元のメッシュ、法線、32bit index、可逆PNGテクスチャの挙動を維持します。
-
-Publish 時には縮小版のフォールバックも同時にアップロードします。iOS のブラウザには利用可能メモリを返す API が存在せず、端末が耐えられるかを事前に予測できないためです。ビューアはまず完全版を読み込み、それが実際に失敗した場合にだけ縮小版を要求し、その際は `Scene ready (reduced build)` と表示します。
-
-DeviceOrientation は要求しません。画面回転時は進行中のタッチ接触を解除し、新しい縦横比に合わせて relief を組み直し、積み上げたタッチ姿勢を保ったまま Recenter を行います。
-
-Looking Glass のフレーミングはモデル側ではなくディスプレイ側の管轄です。polyfill は `targetX/Y/Z` を中心に `targetDiam` の体積を `fovy` で切り取るため、モデルを動かしても既に固定されたフレームの中で動くだけです。適切な値はシーンと実際の見え方に依存するので（2枚の画像で高さが 0.11 と 0.92、大きさが 2.00 と 0.90）、Looking Glass のウィンドウ側の操作とエディタの **Z Offset** スライダーで合わせてください。エディタが出発点を設定するのは画像を読み込んだときだけです。同じ画像で再入室すれば直前の調整がそのまま残り、別の画像を読み込むと出発点に戻ります（あるシーンに合うフレーミングが別のシーンに合うことは稀なため）。回転させすぎてモデルを見失うのはこれとは別で、そちらはモデル側の変換なので、画像の読み込みでリセットされるほか、セッション中でもキャンバスのダブルクリックでいつでも戻せます。出発点の高さはライブラリ既定の 1.6（立位の目線高を前提とするため、原点付近のモデルが低く映る）ではなく 0、奥行きは Looking Glass Go での実測値 −0.575 です。`targetX/Y/Z`・`targetDiam`・`fovy` はエディタの URL で固定でき（例: `?lgTargetY=0.92&lgTargetDiam=0.9`）、セッション開始時に現在値が表示されます。
-
-ポート 5173 の relay が保持するのは最新の1シーンだけで、メモリ内保存です。フロントエンドを再起動した場合は **Publish to Mobile** を再度押してください。別シーンを Publish すると revision が置き換わり、開いているモバイルビューアも自動更新します。
 
 ### WebXR / XR 再生
 - コントロールパネルに **Enter VR** / **Enter Looking Glass** ボタンを追加しました（WebXR 対応の Chromium 系ブラウザ + HTTPS/localhost が必要）。
