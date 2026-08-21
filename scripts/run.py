@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 import signal
 import subprocess
@@ -35,13 +36,51 @@ def launch_backend() -> subprocess.Popen:
     return subprocess.Popen(cmd, cwd=PROJECT_ROOT)
 
 
-def launch_frontend() -> subprocess.Popen:
+def frontend_command(args: argparse.Namespace) -> list[str]:
+    """The frontend command, carrying through the options it accepts.
+
+    This is the recommended way to start, so anything the mobile viewer needs
+    has to be reachable from here. Without the passthrough the camera could
+    only be enabled by abandoning this script and running the two servers by
+    hand, which the instructions present as the alternative rather than the
+    requirement.
+    """
+    cmd = [_python(), "scripts/run_frontend.py"]
+    if args.https:
+        cmd.append("--https")
+    if args.cert:
+        cmd += ["--cert", str(args.cert), "--key", str(args.key)]
+    return cmd
+
+
+def launch_frontend(args: argparse.Namespace) -> subprocess.Popen:
     port = os.environ.get("RGBDE_FRONTEND_PORT", "5173")
     env = os.environ.copy()
     env.setdefault("RGBDE_FRONTEND_PORT", port)
-    cmd = [_python(), "scripts/run_frontend.py"]
+    cmd = frontend_command(args)
     print("::", " ".join(cmd))
     return subprocess.Popen(cmd, cwd=PROJECT_ROOT, env=env)
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--https",
+        action="store_true",
+        help="Serve the frontend over HTTPS, which the mobile viewer's camera "
+             "needs on anything but localhost.",
+    )
+    parser.add_argument(
+        "--cert",
+        type=Path,
+        help="Certificate to use instead of a generated self-signed one, for "
+             "example the one from `tailscale cert`.",
+    )
+    parser.add_argument("--key", type=Path, help="Private key matching --cert.")
+    args = parser.parse_args(argv)
+    if bool(args.cert) != bool(args.key):
+        parser.error("--cert and --key must be given together.")
+    return args
 
 
 def monitor(processes: list[tuple[str, subprocess.Popen]]) -> None:
@@ -73,11 +112,13 @@ def monitor(processes: list[tuple[str, subprocess.Popen]]) -> None:
                     pass
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
     backend = launch_backend()
-    frontend = launch_frontend()
+    frontend = launch_frontend(args)
+    scheme = "https" if (args.https or args.cert) else "http"
     print(":: Backend -> http://localhost:%s" % os.environ.get("RGBDE_BACKEND_PORT", "8000"))
-    print(":: Frontend -> http://localhost:%s" % os.environ.get("RGBDE_FRONTEND_PORT", "5173"))
+    print(":: Frontend -> %s://localhost:%s" % (scheme, os.environ.get("RGBDE_FRONTEND_PORT", "5173")))
     monitor([("backend", backend), ("frontend", frontend)])
 
 

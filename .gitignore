@@ -3,6 +3,7 @@ node_modules/
 checkpoints/
 .agent/
 .playwright-cli/
+.certs/
 __pycache__/
 *.pyc
 
