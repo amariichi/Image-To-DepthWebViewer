@@ -81,10 +81,10 @@ button {
   z-index: 6;
   right: max(28px, calc(env(safe-area-inset-right) + 14px));
   /* The tuning sliders own the bottom of the stage, so the live readings sit
-     below the start button. Beside it they would overlap horizontally on a
-     phone and swallow taps meant for the button, because this element paints
-     above the startup panel. */
-  top: 150px;
+     below the start button and its status line. Beside the button they would
+     overlap horizontally on a phone and swallow taps meant for it, because this
+     element paints above the startup panel. */
+  top: 182px;
   bottom: auto;
   left: max(28px, calc(env(safe-area-inset-left) + 14px));
   max-width: none;

@@ -4,7 +4,9 @@ import test from 'node:test';
 import {
   TRACKING_MIRROR_STORAGE_KEY,
   classifyViewport,
+  DEFAULT_RENDER_THRESHOLDS,
   createRateMeter,
+  createRenderGate,
   probeMotionCapabilities,
   inferFrontCameraMirrorX,
   inferFrontCameraXyGain,
@@ -101,3 +103,80 @@ test('the motion capability probe reports what a device can actually offer', () 
     });
   })(),
 ]));
+
+
+const baseInputs = {
+  sceneId: 1,
+  width: 402,
+  height: 780,
+  eyeX: 0, eyeY: 0, eyeZ: 4.6,
+  roll: 0, yaw: 0, pitch: 0,
+  panX: 0, panY: 0, scale: 1,
+};
+
+
+test('the first frame always draws, and an unchanged one never does', () => {
+  const gate = createRenderGate();
+  assert.equal(gate.shouldRender(baseInputs), true);
+  gate.commit(baseInputs);
+
+  // The eye pose only changes twenty times a second while an animation loop
+  // runs at sixty: the frames in between are identical and must be skipped.
+  assert.equal(gate.shouldRender({ ...baseInputs }), false);
+
+  gate.reset();
+  assert.equal(gate.shouldRender(baseInputs), true);
+});
+
+
+test('a movement too small to shift a pixel is skipped, a visible one is not', () => {
+  const gate = createRenderGate();
+  gate.commit(baseInputs);
+
+  const belowThreshold = DEFAULT_RENDER_THRESHOLDS.eye / 2;
+  assert.equal(gate.shouldRender({ ...baseInputs, eyeX: belowThreshold }), false);
+  assert.equal(gate.shouldRender({ ...baseInputs, eyeX: DEFAULT_RENDER_THRESHOLDS.eye }), true);
+
+  // Every input that moves the picture is watched.
+  for (const [key, step] of [
+    ['eyeY', DEFAULT_RENDER_THRESHOLDS.eye],
+    ['eyeZ', DEFAULT_RENDER_THRESHOLDS.eye],
+    ['roll', DEFAULT_RENDER_THRESHOLDS.angle],
+    ['yaw', DEFAULT_RENDER_THRESHOLDS.angle],
+    ['pitch', DEFAULT_RENDER_THRESHOLDS.angle],
+    ['panX', DEFAULT_RENDER_THRESHOLDS.pan],
+    ['panY', DEFAULT_RENDER_THRESHOLDS.pan],
+  ]) {
+    assert.equal(gate.shouldRender({ ...baseInputs, [key]: step }), true, `${key} was ignored`);
+  }
+  assert.equal(gate.shouldRender({ ...baseInputs, scale: 1 + DEFAULT_RENDER_THRESHOLDS.scale }), true);
+});
+
+
+test('a slow drift accumulates rather than being lost between checks', () => {
+  // Comparing against the last drawn frame, not the last checked one, is what
+  // stops a gradual head movement from being suppressed indefinitely.
+  const gate = createRenderGate();
+  gate.commit(baseInputs);
+  const step = DEFAULT_RENDER_THRESHOLDS.eye / 4;
+  let eyeX = 0;
+  let drew = 0;
+  for (let frame = 0; frame < 12; frame += 1) {
+    eyeX += step;
+    if (gate.shouldRender({ ...baseInputs, eyeX })) {
+      drew += 1;
+      gate.commit({ ...baseInputs, eyeX });
+    }
+  }
+  assert.ok(drew >= 2, `a steady drift must keep drawing, drew ${drew}`);
+  assert.ok(drew <= 4, `a sub-pixel drift must not draw every frame, drew ${drew}`);
+});
+
+
+test('replacing the scene or resizing always draws', () => {
+  const gate = createRenderGate();
+  gate.commit(baseInputs);
+  assert.equal(gate.shouldRender({ ...baseInputs, sceneId: 2 }), true);
+  assert.equal(gate.shouldRender({ ...baseInputs, width: 403 }), true);
+  assert.equal(gate.shouldRender({ ...baseInputs, height: 781 }), true);
+});

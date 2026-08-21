@@ -30,6 +30,7 @@ import { createMobileRenderer } from './mobile-rendering.js';
 import {
   classifyViewport,
   createRateMeter,
+  createRenderGate,
   loadFrontCameraMirrorX,
   inferFrontCameraXyGain,
   probeMotionCapabilities,
@@ -99,7 +100,6 @@ const state = {
   interaction: null,
   loading: false,
   renderPending: false,
-  continuousRenderHandle: null,
   eyePose: null,
   orientation: classifyViewport(window.innerWidth, window.innerHeight),
   geometry: null,
@@ -121,6 +121,11 @@ const state = {
   refitHandle: null,
 };
 const renderRate = createRateMeter({ windowMs: 1200 });
+// Draws only when an input has moved far enough to change a pixel. The eye pose
+// arrives twenty times a second, so a sixty-times-a-second animation loop spent
+// two frames in three redrawing an identical image.
+const renderGate = createRenderGate();
+let sceneGeneration = 0;
 document.body.dataset.orientation = state.orientation;
 
 let renderer;
@@ -137,12 +142,38 @@ function setStatus(message) {
   runtimeStatus.textContent = message;
 }
 
-function requestRender() {
-  if (state.continuousRenderHandle !== null) return;
+function currentRenderInputs() {
+  const eye = state.eyePose;
+  const interaction = state.interaction || {};
+  return {
+    sceneId: sceneGeneration,
+    width: canvas.clientWidth,
+    height: canvas.clientHeight,
+    eyeX: eye?.x ?? 0,
+    eyeY: eye?.y ?? 0,
+    eyeZ: eye?.z ?? currentBaselineEyeZ(),
+    roll: state.levelToGravity ? (state.screenRoll ?? 0) : 0,
+    yaw: Number(interaction.yaw) || 0,
+    pitch: Number(interaction.pitch) || 0,
+    panX: Number(interaction.panX) || 0,
+    panY: Number(interaction.panY) || 0,
+    scale: Number(interaction.scale) || 1,
+  };
+}
+
+// `force` is for the things the gate cannot see: new geometry, a new texture,
+// a changed presentation setting.
+function requestRender({ force = false } = {}) {
   if (state.renderPending) return;
+  if (force) renderGate.reset();
+  const inputs = currentRenderInputs();
+  if (!renderGate.shouldRender(inputs)) return;
   state.renderPending = true;
   requestAnimationFrame((timestamp) => {
     state.renderPending = false;
+    // Re-read rather than reusing the inputs from scheduling time: anything
+    // that moved in between belongs to the frame about to be drawn.
+    renderGate.commit(currentRenderInputs());
     render();
     renderRate.mark(timestamp);
     updateDebugReadout();
@@ -207,34 +238,6 @@ function updateDebugReadout() {
   ].join('\n');
 }
 
-function continuousRender(timestamp) {
-  state.continuousRenderHandle = null;
-  render();
-  renderRate.mark(timestamp);
-  updateDebugReadout();
-  if (tracker.running) {
-    state.continuousRenderHandle = requestAnimationFrame(continuousRender);
-  }
-}
-
-function startContinuousRendering() {
-  if (state.continuousRenderHandle !== null) return;
-  renderRate.reset();
-  state.continuousRenderHandle = requestAnimationFrame(continuousRender);
-}
-
-function stopContinuousRendering() {
-  if (state.continuousRenderHandle !== null) {
-    cancelAnimationFrame(state.continuousRenderHandle);
-    state.continuousRenderHandle = null;
-  }
-  renderRate.reset();
-}
-
-// `createImageBitmap` decodes off the main thread and hands back a GPU-ready
-// bitmap, so no full-size RGBA copy is ever materialised in the page. The
-// texture is the single largest thing a constrained browser has to hold, so
-// this is where the memory headroom actually comes from.
 function decodeTexture(blob, timeoutMs = 15_000) {
   const timeout = new Promise((_, reject) => {
     window.setTimeout(
@@ -350,7 +353,7 @@ function refitDepthToVisibleRange() {
   if (!narrowedEnough && !shiftedEnough) return;
   state.fittedDepthRange = { near, far };
   rebuildReliefGeometry();
-  requestRender();
+  requestRender({ force: true });
 }
 
 function scheduleDepthRefit() {
@@ -462,6 +465,7 @@ function rebuildReliefGeometry({ upload = true } = {}) {
     state.baseDepthRange = { ...state.scene.sourceDepth };
   }
   if (upload) renderer.updateGeometry(state.scene);
+  sceneGeneration += 1;
 }
 
 function render() {
@@ -495,9 +499,10 @@ async function loadPublishedScene({ force = false, variant = state.variant } = {
       tracker.stop({ emit: false });
       tilt.stop();
       state.screenRoll = null;
-      stopContinuousRendering();
+      renderRate.reset();
       recenterButton.disabled = true;
       stopButton.disabled = true;
+      sceneGeneration += 1;
       sceneLabel.textContent = 'Awaiting published scene';
       document.body.dataset.state = 'no-scene';
       setStatus('No scene yet. Use Publish to Mobile in the desktop editor.');
@@ -537,6 +542,7 @@ async function loadPublishedScene({ force = false, variant = state.variant } = {
     syncDebugControls();
     rebuildReliefGeometry({ upload: false });
     renderer.setScene(state.scene, image);
+    sceneGeneration += 1;
     state.revision = envelope.revision;
     startButton.disabled = false;
     sceneLabel.textContent = `${envelope.filename} · r${envelope.revision}`;
@@ -679,14 +685,14 @@ flipTrackingXButton.addEventListener('click', () => {
   state.eyePose = null;
   updateTrackingDirectionButton();
   setStatus('Left/right tracking direction changed · hold center while recalibrating.');
-  requestRender();
+  requestRender({ force: true });
 });
 updateTrackingDirectionButton();
 
 function recenterTracking() {
   state.eyePose = null;
   tracker.recenter();
-  requestRender();
+  requestRender({ force: true });
 }
 
 startButton.addEventListener('click', async () => {
@@ -722,7 +728,8 @@ startButton.addEventListener('click', async () => {
     startButton.textContent = 'Tracking active';
     recenterButton.disabled = false;
     stopButton.disabled = false;
-    startContinuousRendering();
+    renderRate.reset();
+    requestRender({ force: true });
   } catch (error) {
     console.error(error);
     document.body.dataset.state = 'tracking-error';
@@ -731,7 +738,7 @@ startButton.addEventListener('click', async () => {
     startButton.disabled = false;
     recenterButton.disabled = true;
     stopButton.disabled = true;
-    stopContinuousRendering();
+    renderRate.reset();
     setStatus(`Camera tracking unavailable: ${error.message} Static touch view remains active.`);
   }
 });
@@ -744,7 +751,7 @@ stopButton.addEventListener('click', () => {
   state.screenRoll = null;
   state.tiltPermission = null;
   updateLevellingButton();
-  stopContinuousRendering();
+  renderRate.reset();
   startButton.textContent = 'Start 3D';
   startButton.disabled = false;
   recenterButton.disabled = true;
@@ -771,7 +778,7 @@ function handleViewportChange() {
     baselineEyeZ: geometry.baselineEyeZ,
   });
   rebuildReliefGeometry();
-  requestRender();
+  requestRender({ force: true });
 }
 
 window.addEventListener('resize', handleViewportChange);
@@ -780,7 +787,7 @@ window.visualViewport?.addEventListener('resize', handleViewportChange);
 window.addEventListener('pagehide', () => {
   tilt.stop();
   tracker.stop({ emit: false });
-  stopContinuousRendering();
+  renderRate.reset();
   touch.destroy();
 }, { once: true });
 
@@ -811,19 +818,19 @@ if (debugTracking) {
     });
     syncDebugControls();
     rebuildReliefGeometry();
-    requestRender();
+    requestRender({ force: true });
   });
   debugSpanInput.addEventListener('input', () => {
     state.depthSpan = Number(debugSpanInput.value);
     syncDebugControls();
     rebuildReliefGeometry();
-    requestRender();
+    requestRender({ force: true });
   });
   debugBlendInput.addEventListener('input', () => {
     state.disparityBlend = Number(debugBlendInput.value);
     syncDebugControls();
     rebuildReliefGeometry();
-    requestRender();
+    requestRender({ force: true });
   });
   debugLevelInput.addEventListener('change', async () => {
     state.levelToGravity = debugLevelInput.checked;
@@ -837,7 +844,7 @@ if (debugTracking) {
       state.screenRoll = null;
     }
     syncDebugControls();
-    requestRender();
+    requestRender({ force: true });
   });
   debugRefitInput.addEventListener('change', () => {
     state.refitDepthToView = debugRefitInput.checked;
@@ -846,13 +853,13 @@ if (debugTracking) {
       rebuildReliefGeometry();
     }
     syncDebugControls();
-    requestRender();
+    requestRender({ force: true });
   });
   debugAnchorInput.addEventListener('change', () => {
     state.anchorVisibleFront = debugAnchorInput.checked;
     state.visibleFrontCorrection = 0;
     syncDebugControls();
-    requestRender();
+    requestRender({ force: true });
   });
   syncDebugControls();
 }

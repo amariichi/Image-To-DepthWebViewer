@@ -100,3 +100,65 @@ export async function probeMotionCapabilities({
       || typeof motionEvent?.requestPermission === 'function',
   };
 }
+
+
+// Decides whether the image on screen would actually differ from the one
+// already drawn.
+//
+// The eye pose only changes when a new face observation arrives, which is
+// twenty times a second, while a continuous animation loop redraws sixty times
+// a second: two frames in three were identical, and each carried a quarter of a
+// million vertices, a multisample resolve, and a scan of the relief's front
+// samples. Rendering only when an input moved leaves the picture unchanged --
+// the same photons, drawn once instead of three times.
+//
+// The thresholds are set below one pixel of on-screen movement, so a skipped
+// frame is one that could not have looked different. On a phone the picture
+// spans roughly 400 CSS pixels for about 0.95 world units, making a pixel about
+// 0.0024 units; each limit below is well inside that once multiplied by how
+// strongly that input moves the picture.
+export const DEFAULT_RENDER_THRESHOLDS = Object.freeze({
+  // Eye translation moves a point at depth D by D / (eye + D) of itself, at
+  // most about 0.63 for the deepest relief allowed.
+  eye: 0.0015,
+  // Rotations swing the deepest geometry by roughly its depth times the angle.
+  angle: 0.0002,
+  // Pan is applied directly in world units.
+  pan: 0.0015,
+  // Pinch moves the image edge by half the scale change.
+  scale: 0.002,
+});
+
+export function createRenderGate(thresholds = {}) {
+  const limits = { ...DEFAULT_RENDER_THRESHOLDS, ...thresholds };
+  let last = null;
+
+  const moved = (a, b, limit) => !(Math.abs(a - b) < limit);
+
+  return {
+    reset() {
+      last = null;
+    },
+    shouldRender(inputs) {
+      if (!last) return true;
+      // Anything that replaces the geometry or the viewport must always draw.
+      if (last.sceneId !== inputs.sceneId) return true;
+      if (last.width !== inputs.width || last.height !== inputs.height) return true;
+      if (moved(last.eyeX, inputs.eyeX, limits.eye)) return true;
+      if (moved(last.eyeY, inputs.eyeY, limits.eye)) return true;
+      if (moved(last.eyeZ, inputs.eyeZ, limits.eye)) return true;
+      if (moved(last.roll, inputs.roll, limits.angle)) return true;
+      if (moved(last.yaw, inputs.yaw, limits.angle)) return true;
+      if (moved(last.pitch, inputs.pitch, limits.angle)) return true;
+      if (moved(last.panX, inputs.panX, limits.pan)) return true;
+      if (moved(last.panY, inputs.panY, limits.pan)) return true;
+      if (moved(last.scale, inputs.scale, limits.scale)) return true;
+      return false;
+    },
+    // Recorded against what was drawn, not against what was last checked, so a
+    // slow drift still accumulates until it crosses the threshold.
+    commit(inputs) {
+      last = { ...inputs };
+    },
+  };
+}
