@@ -324,8 +324,6 @@ function refitDepthToVisibleRange() {
   const touchTransform = createReliefInteractionMatrix({
     interaction: state.interaction,
     frontZ: pivotZ,
-    depthSpan: state.scene.depthSpan || state.depthSpan,
-    eyeZ: currentBaselineEyeZ(),
   });
   const safeModel = constrainReliefBehindScreen({
     bounds: state.scene.bounds,
@@ -374,15 +372,7 @@ function computeHeadCoupledMatrices(scene, interaction, eyePose) {
     z: currentBaselineEyeZ(),
   };
   const pivotZ = scene.frontZ ?? 0;
-  // Pinch magnifies the miniature, so relief depth grows with it up to a bound
-  // set by the viewer's real distance. Freezing depth would flatten the model
-  // into an anamorphic card exactly when the viewer zooms in to inspect it.
-  let touchTransform = createReliefInteractionMatrix({
-    interaction,
-    frontZ: pivotZ,
-    depthSpan: scene.depthSpan || state.depthSpan,
-    eyeZ: eye.z,
-  });
+  let touchTransform = createReliefInteractionMatrix({ interaction, frontZ: pivotZ });
   const levelling = state.levelToGravity && state.screenRoll !== null
     ? clampTiltCorrection(state.screenRoll, { invert: levelInvert })
     : 0;

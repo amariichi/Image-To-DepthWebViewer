@@ -17,14 +17,6 @@ export const DEFAULT_FAR_QUANTILE = 0.98;
 // and about 0.003% under linear mapping.
 export const DEFAULT_DISPARITY_BLEND = 1;
 
-// The deepest relief allowed relative to the viewer's eye distance. Pinch may
-// magnify the miniature, but once its thickness reaches this fraction of the
-// viewing distance the perspective foreshortening inside a single depth layer
-// becomes the "crescent" artifact reported on real devices.
-export const MAX_RELIEF_DEPTH_RATIO = 0.25;
-
-const MIN_INTERACTION_Z_SCALE = 0.25;
-
 // A coarse grid holding the nearest sample of each image cell. It is what makes
 // the "nearest visible sample" query cheap enough to run every frame: a few
 // thousand points instead of a quarter of a million.
@@ -279,32 +271,23 @@ export function estimateUniformScaleDepthSpan({
   return scale * (sourceDepth.far - sourceDepth.near);
 }
 
-export function reliefInteractionDepthScale({
-  scale,
-  depthSpan,
-  eyeZ,
-  maxDepthRatio = MAX_RELIEF_DEPTH_RATIO,
-}) {
-  finitePositive(depthSpan, 'depthSpan');
-  finitePositive(eyeZ, 'eyeZ');
-  const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
-  const safeRatio = Number.isFinite(maxDepthRatio) && maxDepthRatio > 0
-    ? maxDepthRatio
-    : MAX_RELIEF_DEPTH_RATIO;
-  // Pinch magnifies a miniature, so depth must grow with it or the model turns
-  // into an anamorphic flat card. It stops growing once the relief would be
-  // deeper than `maxDepthRatio` of the viewing distance.
-  const allowed = (safeRatio * eyeZ) / depthSpan;
-  return Math.max(Math.min(safeScale, allowed), MIN_INTERACTION_Z_SCALE);
-}
-
-export function createReliefInteractionMatrix({
-  interaction,
-  frontZ = 0,
-  depthSpan = 1,
-  eyeZ = 4.5,
-  maxDepthRatio = MAX_RELIEF_DEPTH_RATIO,
-}) {
+// Pinch magnifies the miniature, and a miniature magnifies uniformly.
+//
+// Scaling the image plane alone would flatten the model into an anamorphic card
+// exactly when the viewer zooms in to look closer, and scaling depth by anything
+// other than the same factor breaks the construction: each vertex sits on the
+// ray from the calibrated eye through its image anchor, with its lateral
+// expansion baked for its own depth, so changing that depth afterwards leaves
+// the two inconsistent and the initial view stops reproducing the source image.
+// Uniform scaling has neither problem, being identical to rebuilding the relief
+// at a larger span and a correspondingly larger anchor.
+//
+// There is no separate depth limit. One existed and did nothing but harm: its
+// only possible action was to introduce that inconsistency, and it engaged so
+// early that the relief depth slider stopped deepening anything past about 1.15.
+// The bounds that matter are already elsewhere -- touch scale spans 0.45 to 3,
+// and the relief span is bounded where it is authored.
+export function createReliefInteractionMatrix({ interaction, frontZ = 0 }) {
   const panX = Number(interaction?.panX) || 0;
   const panY = Number(interaction?.panY) || 0;
   const yaw = Number(interaction?.yaw) || 0;
@@ -313,12 +296,11 @@ export function createReliefInteractionMatrix({
   if (!Number.isFinite(frontZ) || !Number.isFinite(scale) || !(scale > 0)) {
     throw new Error('Relief interaction requires a finite pivot and positive scale.');
   }
-  const zScale = reliefInteractionDepthScale({ scale, depthSpan, eyeZ, maxDepthRatio });
   let matrix = mat4.identity();
   matrix = mat4.translate(matrix, [panX, panY, frontZ]);
   matrix = mat4.rotateY(matrix, yaw);
   matrix = mat4.rotateX(matrix, pitch);
-  matrix = mat4.scaleAxes(matrix, [scale, scale, zScale]);
+  matrix = mat4.scale(matrix, scale);
   matrix = mat4.translate(matrix, [0, 0, -frontZ]);
   return matrix;
 }

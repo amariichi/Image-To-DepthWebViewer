@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  MAX_RELIEF_DEPTH_RATIO,
   computeReliefDepthRange,
   constrainReliefBehindScreen,
   FRONT_SAMPLE_STRIDE,
@@ -12,7 +11,6 @@ import {
   createMobileReliefScene,
   estimateUniformScaleDepthSpan,
   normalizeReliefDepth,
-  reliefInteractionDepthScale,
 } from '../webapp/src/mobile-relief.js';
 import {
   computeEyeViewMatrix,
@@ -120,49 +118,30 @@ test('manual transforms are translated back when they cross the display glass', 
 });
 
 
-test('pinch scales a miniature uniformly while depth stays within reach of the eye', () => {
-  // A modest pinch is a true uniform magnification of the miniature. Freezing Z
-  // here would turn the model into an anamorphic flat card exactly when the
-  // viewer zooms in to inspect it.
-  const modest = createReliefInteractionMatrix({
-    frontZ: 0,
-    depthSpan: 0.2,
-    eyeZ: 4.5,
-    interaction: { panX: 0, panY: 0, yaw: 0, pitch: 0, scale: 2 },
-  });
-  const modestPoint = mat4.transformPoint(modest, [0.5, -0.25, -0.2]);
-  assert.ok(Math.abs(modestPoint[0] - 1) < 1e-6);
-  assert.ok(Math.abs(modestPoint[1] + 0.5) < 1e-6);
-  assert.ok(Math.abs(modestPoint[2] + 0.4) < 1e-6, 'depth grows with a modest pinch');
+test('pinch scales the miniature uniformly, in depth as well as on screen', () => {
+  // Scaling the image plane alone would flatten the model into an anamorphic
+  // card exactly when the viewer zooms in to look closer. Scaling depth by any
+  // other factor breaks the construction instead: each vertex sits on the ray
+  // from the calibrated eye through its image anchor with its lateral expansion
+  // baked for its own depth, so changing that depth afterwards leaves the two
+  // inconsistent.
+  for (const scale of [0.5, 1, 2, 3]) {
+    const matrix = createReliefInteractionMatrix({
+      frontZ: 0,
+      interaction: { panX: 0, panY: 0, yaw: 0, pitch: 0, scale },
+    });
+    const point = mat4.transformPoint(matrix, [0.5, -0.25, -2]);
+    assert.ok(Math.abs(point[0] - 0.5 * scale) < 1e-6, `x at scale ${scale}`);
+    assert.ok(Math.abs(point[1] + 0.25 * scale) < 1e-6, `y at scale ${scale}`);
+    assert.ok(Math.abs(point[2] + 2 * scale) < 1e-6, `depth must scale with it at ${scale}`);
+  }
 
-  // Past the comfort bound depth stops growing. Unbounded depth growth relative
-  // to a fixed viewing distance is what produced the reported crescent-shaped
-  // foreground distortion on real devices.
-  const extreme = createReliefInteractionMatrix({
+  // The glass stays the pivot whatever the scale.
+  const zoomed = createReliefInteractionMatrix({
     frontZ: 0,
-    depthSpan: 1,
-    eyeZ: 4.5,
     interaction: { panX: 0, panY: 0, yaw: 0, pitch: 0, scale: 3 },
   });
-  const extremePoint = mat4.transformPoint(extreme, [0.5, -0.25, -1]);
-  assert.ok(Math.abs(extremePoint[0] - 1.5) < 1e-6, 'image plane still magnifies fully');
-  assert.ok(Math.abs(extremePoint[2] + 1.125) < 1e-6, 'depth stops at a quarter of eye distance');
-});
-
-
-test('relief depth scale never exceeds the comfort ratio of the viewing distance', () => {
-  const eyeZ = 4.5;
-  for (const depthSpan of [0.2, 0.5, 1, 1.8]) {
-    for (const scale of [0.5, 1, 2, 3]) {
-      const zScale = reliefInteractionDepthScale({ scale, depthSpan, eyeZ });
-      assert.ok(zScale <= scale + 1e-9, 'depth never grows faster than the image plane');
-      const thickness = depthSpan * zScale;
-      assert.ok(
-        thickness <= MAX_RELIEF_DEPTH_RATIO * eyeZ + 1e-9 || zScale <= 0.25 + 1e-9,
-        `thickness ${thickness} exceeded the comfort bound`,
-      );
-    }
-  }
+  assert.ok(mat4.transformPoint(zoomed, [0, 0, 0]).every((v) => Math.abs(v) < 1e-9));
 });
 
 

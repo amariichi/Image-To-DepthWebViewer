@@ -29,6 +29,15 @@ const MIN_GRAVITY_MAGNITUDE = 2;
 // The angle of "down" within the screen plane, measured from the screen's own
 // downward direction, with the page's rotation relative to the hardware taken
 // out.
+//
+// `accelerationIncludingGravity` is reported in the device's natural frame,
+// which does not turn with the page, so the page's rotation has to be added
+// back. The sign matters and was wrong at first: turning the device
+// anticlockwise puts gravity along its -x, giving a device roll of -90, while
+// the page rotates to compensate and reports an angle of 90. Subtracting gave
+// -180 and turning the device the other way gave -180 as well, so both landscape
+// orientations pinned the correction at its cap instead of levelling. Adding
+// gives 0 for both, which is level.
 export function computeScreenRoll(gravity, screenAngleDeg = 0) {
   const x = Number(gravity?.x);
   const y = Number(gravity?.y);
@@ -38,7 +47,7 @@ export function computeScreenRoll(gravity, screenAngleDeg = 0) {
   if (Math.hypot(x, y) < MIN_GRAVITY_MAGNITUDE) return null;
   const deviceRoll = Math.atan2(x, -y);
   const screenAngle = (Number(screenAngleDeg) || 0) * (Math.PI / 180);
-  return wrapAngle(deviceRoll - screenAngle);
+  return wrapAngle(deviceRoll + screenAngle);
 }
 
 export function wrapAngle(angle) {

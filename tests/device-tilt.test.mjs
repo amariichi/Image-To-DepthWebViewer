@@ -39,13 +39,27 @@ test('a device pointing straight up or down reports no usable roll', () => {
 });
 
 
-test('the page rotating relative to the hardware is taken out', () => {
-  // Landscape: the page has turned 90 degrees under a device that has not
-  // physically rolled relative to gravity, so the roll must read as zero.
-  const gravity = { x: G, y: 0, z: 0 };
-  assert.ok(Math.abs(deg(computeScreenRoll(gravity, 0)) - 90) < 1e-6);
-  assert.ok(Math.abs(computeScreenRoll(gravity, 90)) < 1e-6);
-  assert.ok(Math.abs(deg(computeScreenRoll(gravity, -90)) - 180) < 1e-6);
+test('both landscape orientations read as level, not pinned at the cap', () => {
+  // Gravity is reported in the device's natural frame, which does not turn with
+  // the page, so the page's rotation has to be added back. Subtracting it made
+  // both landscape orientations come out at 180 degrees, which pinned the
+  // levelling at its cap and tilted the view by a fixed 18 degrees whichever way
+  // the device was turned.
+  //
+  // Turned anticlockwise: gravity lies along the device's -x, and the page
+  // reports 90.
+  assert.ok(Math.abs(computeScreenRoll({ x: -G, y: 0, z: 0 }, 90)) < 1e-6);
+  // Turned clockwise: gravity lies along +x, and the page reports 270.
+  assert.ok(Math.abs(computeScreenRoll({ x: G, y: 0, z: 0 }, 270)) < 1e-6);
+  // Upside down.
+  assert.ok(Math.abs(computeScreenRoll({ x: 0, y: G, z: 0 }, 180)) < 1e-6);
+
+  // A genuine roll on top of a landscape orientation still reads as that roll.
+  const rolled = computeScreenRoll(
+    { x: -G * Math.cos(Math.PI / 18), y: -G * Math.sin(Math.PI / 18), z: 0 },
+    90,
+  );
+  assert.ok(Math.abs(deg(rolled) - 10) < 1e-6, `expected 10 degrees, got ${deg(rolled)}`);
 });
 
 
