@@ -1,5 +1,5 @@
 # Image-to-Depth Web Viewer
-![AppImage1](https://github.com/user-attachments/assets/92bbe04c-fc68-477a-be74-612d1e930189)![AppImage2](https://github.com/user-attachments/assets/241659fc-060d-49b3-9832-d0fd4689f8fc)
+<img width="400" height="225" alt="Desktop editor" src="https://github.com/user-attachments/assets/92bbe04c-fc68-477a-be74-612d1e930189" /><img width="400" height="225" alt="Side-by-side stereo view" src="https://github.com/user-attachments/assets/241659fc-060d-49b3-9832-d0fd4689f8fc" />
 
 Language / 言語: [English](#english) | [日本語](#日本語)
 
