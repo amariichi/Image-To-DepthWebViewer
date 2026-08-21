@@ -77,10 +77,11 @@ The feature is successful when a user loads or generates an RGBDE scene at `http
 - [x] (2026-08-21) First device figures for the gated renderer: 35 to 50 frames a second against a predicted 20, with inference steady at exactly 20 Hz and 16 to 17 ms. The excess draws were traced to the render gate holding roll to the same limit as yaw and pitch, which is wrong by a factor of about 27; roll now has its own limit. The inference delegate was also left unstated and is now asked for explicitly, with the chosen one reported.
 - [x] (2026-08-21) Second device figures confirmed the roll fix and reversed the delegate decision: 20 to 27 frames a second against 35 to 50 before, close to the 20 Hz pose rate, but inference rose from 16 to 17 ms to 19.1 to 20 ms once GPU was named explicitly. Fewer draw calls were competing for the GPU at the time, so that was not contention. CPU is now tried first with GPU as a fallback, and `?delegate=gpu` or `?delegate=cpu` forces either for comparison.
 - [x] (2026-08-21) Confirmed on the user's devices: the shipped horizontal direction is correct, `immersive-ar` is unavailable, the three perceptual variables were left at their defaults after review, inference runs at exactly 20 Hz on the CPU delegate, and drawing settled at 20 to 27 frames a second.
-- [ ] Re-publish a scene and confirm the two defects found after the last publish are actually gone on hardware: the near subject should have noticeably more relief now that Depth Magnification is no longer counted twice, and a flat surface should stay flat at a large relief span now that depth is measured perpendicular to the image rather than along the capture ray.
+- [x] (2026-08-22) Confirmed on hardware that unprojecting depth along the optical axis removed the unnatural stretching, both at the edges of the frame and on near subjects, which is how a `cos(theta)` error distributed across the picture would present.
 - [x] (2026-08-21) Fixed two defects found on hardware. Landscape orientation pinned the levelling at its 18 degree cap in both directions, because the page's rotation was subtracted from the device-frame gravity angle instead of added, putting both landscape cases at 180 degrees. Separately the relief depth limit was removed: it allowed a depth scale of only 1.15 at the default span, so pinching to magnify flattened the model almost at once, and below 1 at a span of 2 or more, so the relief depth slider stopped deepening anything.
-- [ ] Confirm the gravity levelling turns the right way now that its sign has been corrected, since the correction was only verified through `?levelFlip=1` before the default was changed.
-- [ ] Confirm the optimized scene still loads in iPad Chrome, and report whether battery life is noticeably better after the drawing reduction.
+- [x] (2026-08-22) Confirmed the gravity levelling holds the view upright in every orientation on both devices, once the offset was removed by rounding to the nearest quarter turn rather than by interpreting `screen.orientation.angle`.
+- [x] (2026-08-22) The optimized scene loads and runs on both the iPhone and the iPad throughout the tuning passes above.
+- [ ] Report whether battery life is noticeably better in ordinary use, now that drawing has gone from an unconditional 60 frames a second to 20-27, and inference is confirmed on the CPU delegate at 16-17 ms.
 
 ## Surprises & Discoveries
 
@@ -428,6 +429,8 @@ The validation transcript for the fourth pass was:
     mobile scene state:           ready, WebGL error 0, image/jpeg texture, Uint32 indices
     relief depth bounds:          z in [-1, 0]
     simulated full-build failure: fell back and reported "Scene ready (reduced build)"
+
+The fifth pass was driven entirely by real-device observation, and every defect it found had been invisible to reasoning alone. Two of them were mine: an orientation offset I twice tried to derive from `screen.orientation.angle` and finally removed by rounding instead, and a depth measure I changed on the strength of an analysis that assumed the reconstruction was already correct. The reconstruction was not: the mesh had always treated Depth Pro's optical-axis depth as a distance along the viewing ray, placing everything off-axis at `cos(theta)` of its true depth. That had been latent since long before this work, invisible while the scene was only ever viewed head-on, and surfaced the moment a head-coupled window let it be viewed from an angle. The user identified it from the symptom — an upright head rendered as though bowed, stretching when the device was turned to face the false slope squarely — before the cause was known.
 
 ## Context and Orientation
 
