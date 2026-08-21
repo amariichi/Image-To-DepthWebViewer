@@ -29,6 +29,8 @@ jobs:
           cache: "npm"
       - name: Install Node dependencies
         run: npm ci
+      - name: Run JavaScript tests
+        run: npm test
       - name: Run JavaScript syntax checks
         run: npm run check:js
       - name: Run ESLint
