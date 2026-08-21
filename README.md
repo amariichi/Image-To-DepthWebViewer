@@ -57,7 +57,21 @@ This repository now ships a two-part toolchain: a WebGL viewer in `webapp/` and 
 Publish the scene you are looking at to a phone or tablet, then use its front camera to move the viewpoint: the display behaves like a window onto a miniature sitting just behind the glass.
 
 1. In the editor, load or generate an RGBDE scene, adjust it, and press **Publish to Mobile**.
-2. On the phone or tablet, open the same host with `/viewer.html` appended. The camera needs a secure context, so `http://localhost` works on the same device but a plain `http://` LAN address usually does not — put an HTTPS proxy in front of port 5173.
+2. On the phone or tablet, open `/viewer.html` on the machine serving the editor — for example `https://192.168.1.5:5173/viewer.html`.
+
+   **This has to be HTTPS.** Browsers only give a page the camera on a secure origin, and a plain `http://` LAN address is not one. (`localhost` is treated as secure, but on the phone that means the phone itself, not the machine running the server.) Two ways to get it:
+
+   ```bash
+   python scripts/run.py --https
+   ```
+
+   Creates a self-signed certificate on first use and prints the address to open. The phone will warn about it once; continue past the warning.
+
+   ```bash
+   tailscale serve 5173
+   ```
+
+   If you use Tailscale, this serves the port over your tailnet with a genuine certificate, so there is no warning and nothing to install on the phone. It stays inside your tailnet rather than going out to the internet. `tailscale cert` can also issue certificate files to pass to `--https` with `--cert` and `--key`.
 3. Press **Start 3D** and hold still while it calibrates. iOS asks for camera and motion access; refusing motion costs only the levelling, and a **Level** button appears so you can grant it later.
 4. Move your head to look around. **Recenter** re-calibrates without reloading. **Flip L/R** reverses the horizontal direction if a device reports its camera the other way round, and remembers the choice.
 
@@ -174,7 +188,21 @@ An ordinary panel shows both eyes the same image, so viewing square-on, or with 
 いま見ているシーンをスマホ／タブレットへ Publish し、前面カメラで視点を動かします。画面がガラス窓のようになり、その奥にミニチュアが置かれているように見えます。
 
 1. エディタで RGBDE を読み込むか生成し、調整してから **Publish to Mobile** を押します。
-2. スマホ／タブレットで同じホストの末尾に `/viewer.html` を付けて開きます。カメラにはセキュアコンテキストが必要なので、同一端末の `http://localhost` は使えますが、LAN 内の素の `http://` では通常使えません。ポート 5173 の前段に HTTPS プロキシを置いてください。
+2. スマホ／タブレットで、エディタを動かしている PC の `/viewer.html` を開きます（例: `https://192.168.1.5:5173/viewer.html`）。
+
+   **HTTPS である必要があります。** ブラウザはセキュアオリジンでしかカメラを許可せず、素の `http://` の LAN アドレスはこれに当たりません（`localhost` は例外扱いですが、スマホで開いた `localhost` はスマホ自身であって PC ではありません）。方法は2つあります。
+
+   ```bash
+   python scripts/run.py --https
+   ```
+
+   初回に自己署名証明書を作り、開くべきアドレスを表示します。スマホでは証明書の警告が1度出るので、そのまま進んでください。
+
+   ```bash
+   tailscale serve 5173
+   ```
+
+   Tailscale を使っている場合はこちらが簡単です。tailnet 内に正規の証明書付きで公開されるため警告は出ず、スマホ側に入れるものもありません。インターネットには出ず tailnet 内に閉じます。`tailscale cert` で証明書ファイルを発行し、`--https` に `--cert` / `--key` で渡すこともできます。
 3. **Start 3D** を押し、キャリブレーション中は静止します。iOS はカメラとモーションの許可を求めます。モーションを拒否しても失われるのは水平維持だけで、あとから許可できるよう **Level** ボタンが現れます。
 4. 頭を動かすと視点が変わります。**Recenter** は再読込せずにキャリブレーションをやり直します。**Flip L/R** は左右方向を反転し（端末がカメラ座標を逆に報告する場合）、選択は保存されます。
 
