@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
@@ -17,6 +19,32 @@ from fastapi.staticfiles import StaticFiles
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WEBAPP_DIR = PROJECT_ROOT / "webapp"
 DEFAULT_MAX_UPLOAD_BYTES = 64 * 1024 * 1024
+
+# Headers that describe one hop of a connection rather than the message, and so
+# must not be passed along to the next one.
+_HOP_BY_HOP_HEADERS = frozenset({
+    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+    "te", "trailers", "transfer-encoding", "upgrade",
+})
+
+
+def default_backend_origin() -> str:
+    """Where the depth backend is, as this host should reach it.
+
+    127.0.0.1 rather than localhost: the name can resolve to the IPv6 loopback
+    first, and the backend binds IPv4.
+    """
+    origin = os.environ.get("RGBDE_BACKEND_ORIGIN")
+    if origin:
+        return origin.rstrip("/")
+    return f"http://127.0.0.1:{os.environ.get('RGBDE_BACKEND_PORT', '8000')}"
+
+
+def forwardable_headers(headers, *, drop: frozenset[str] = frozenset()) -> dict[str, str]:
+    unwanted = _HOP_BY_HOP_HEADERS | drop
+    return {
+        key: value for key, value in headers.items() if key.lower() not in unwanted
+    }
 
 _ALLOWED_MANIFEST_FIELDS = {
     "schemaVersion",
@@ -167,10 +195,70 @@ def create_app(
     webapp_dir: Path = WEBAPP_DIR,
     *,
     max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
+    backend_origin: str | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Image-To-Depth mobile viewer host")
     store = SceneStore()
     app.state.scene_store = store
+    app.state.backend_origin = (backend_origin or default_backend_origin()).rstrip("/")
+    # Substituted in tests so the proxy can be exercised without a backend.
+    app.state.backend_transport = None
+
+    @app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
+    async def proxy_to_backend(path: str, request: Request) -> Response:
+        """Reach the depth backend through the origin the page came from.
+
+        The editor used to call the backend directly at http://localhost:8000.
+        From a page served over HTTPS that is a cross-origin plain-text
+        request, and whether it is allowed is a browser policy decision rather
+        than anything this project controls: Chrome permits it because
+        localhost counts as a trustworthy origin, and Safari does not. Going
+        through this origin removes the question, along with the CORS case.
+        """
+        body = await request.body()
+        # No read timeout: depth inference on a CPU takes far longer than any
+        # default would allow. The connect timeout stays short so a backend
+        # that is not running is reported quickly instead of appearing to hang.
+        options: dict[str, Any] = {
+            "timeout": httpx.Timeout(5.0, read=None, write=None, pool=None),
+        }
+        if app.state.backend_transport is not None:
+            options["transport"] = app.state.backend_transport
+
+        try:
+            async with httpx.AsyncClient(**options) as client:
+                upstream = await client.request(
+                    request.method,
+                    f"{app.state.backend_origin}/api/{path}",
+                    params=request.query_params,
+                    headers=forwardable_headers(
+                        request.headers, drop=frozenset({"host", "content-length"})
+                    ),
+                    content=body,
+                )
+        except httpx.ConnectError:
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    f"The depth backend is not reachable at {app.state.backend_origin}. "
+                    "Start it with scripts/run.py, or scripts/run_backend.py on its own."
+                ),
+            ) from None
+        except httpx.HTTPError as error:
+            raise HTTPException(
+                status_code=502, detail=f"The depth backend could not be reached: {error}"
+            ) from None
+
+        # httpx has already decoded the body, so a surviving Content-Encoding
+        # would describe the response as compressed when it no longer is.
+        return Response(
+            content=upstream.content,
+            status_code=upstream.status_code,
+            headers=forwardable_headers(
+                upstream.headers,
+                drop=frozenset({"content-length", "content-encoding"}),
+            ),
+        )
 
     @app.post("/viewer-api/scene")
     async def publish_scene(
@@ -269,10 +357,12 @@ def create_app(
         error unless the console is open. Requiring revalidation costs one
         conditional request per file and removes that failure mode entirely.
 
-        The scene endpoints set their own cache headers and are left alone.
+        The scene endpoints and the proxied backend set their own cache
+        headers and are left alone.
         """
         response = await call_next(request)
-        if not request.url.path.startswith("/viewer-api/"):
+        path = request.url.path
+        if not path.startswith("/viewer-api/") and not path.startswith("/api/"):
             response.headers.setdefault("Cache-Control", "no-cache")
         return response
 

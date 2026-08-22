@@ -496,6 +496,10 @@ async function loadPublishedScene({ force = false, variant = state.variant } = {
       state.sourceImageSize = null;
       state.scene = null;
       state.revision = 0;
+      // The reason it cannot be pressed belongs on the button. The status line
+      // below says the same thing, but a disabled primary action reads as a
+      // fault in the page rather than as a step not yet taken.
+      startButton.textContent = 'Publish a scene first';
       startButton.disabled = true;
       state.variant = 'full';
       state.reducedAvailable = false;
@@ -547,6 +551,7 @@ async function loadPublishedScene({ force = false, variant = state.variant } = {
     renderer.setScene(state.scene, image);
     sceneGeneration += 1;
     state.revision = envelope.revision;
+    startButton.textContent = 'Start 3D';
     startButton.disabled = false;
     sceneLabel.textContent = `${envelope.filename} · r${envelope.revision}`;
     document.body.dataset.state = wasViewing ? 'viewing' : 'ready';

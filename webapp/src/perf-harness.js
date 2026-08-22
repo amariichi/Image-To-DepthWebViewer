@@ -7,7 +7,7 @@ import {
 } from "./geometry.js";
 import { preprocessDepth } from "./depth-processing.js";
 
-const API_BASE = window.__RGBDE_API_BASE__ || "http://localhost:8000";
+const API_BASE = window.__RGBDE_API_BASE__ ?? "";
 
 const FIXTURES = [
   { name: "rgbde-small", url: "./test-assets/rgbde-small.png" },

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 import unittest
 
+import httpx
 from fastapi.testclient import TestClient
 
-from server.viewer_host import WEBAPP_DIR, create_app
+from server.viewer_host import WEBAPP_DIR, create_app, default_backend_origin
 
 
 def manifest(**overrides):
@@ -205,3 +207,139 @@ class ViewerHostStaticTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BackendProxyTest(unittest.TestCase):
+    """The editor reaches the depth backend through this origin.
+
+    Naming the backend directly made it a cross-origin plain-text request from
+    an HTTPS page, which each browser decides about differently: Chrome allows
+    it because localhost is a trustworthy origin, Safari does not.
+    """
+
+    def _client(self, handler, **kwargs):
+        app = create_app(WEBAPP_DIR, backend_origin="http://backend.test:8000", **kwargs)
+        app.state.backend_transport = httpx.MockTransport(handler)
+        return TestClient(app)
+
+    def test_a_get_is_forwarded_and_the_body_returned(self) -> None:
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["url"] = str(request.url)
+            return httpx.Response(200, json={"ready": True})
+
+        with self._client(handler) as client:
+            response = client.get("/api/status")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"ready": True})
+        self.assertEqual(seen["url"], "http://backend.test:8000/api/status")
+
+    def test_an_upload_reaches_the_backend_intact(self) -> None:
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["method"] = request.method
+            seen["body"] = request.content
+            return httpx.Response(200, content=b"\x89PNG-depth", headers={
+                "Content-Type": "image/png",
+                # The editor reads the filename back out of this header.
+                "X-RGBDE-Filename": "portrait_RGBDE.png",
+            })
+
+        with self._client(handler) as client:
+            response = client.post("/api/process", content=b"multipart-payload")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"\x89PNG-depth")
+        self.assertEqual(seen["method"], "POST")
+        self.assertEqual(seen["body"], b"multipart-payload")
+        # A response header the editor depends on must survive the hop.
+        self.assertEqual(response.headers["X-RGBDE-Filename"], "portrait_RGBDE.png")
+
+    def test_the_query_string_is_carried_through(self) -> None:
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["query"] = request.url.query.decode()
+            return httpx.Response(200, json={})
+
+        with self._client(handler) as client:
+            client.get("/api/status?verbose=1")
+        self.assertEqual(seen["query"], "verbose=1")
+
+    def test_a_backend_error_is_passed_on_rather_than_masked(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(422, json={"detail": "image too large"})
+
+        with self._client(handler) as client:
+            response = client.post("/api/process", content=b"x")
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.json()["detail"], "image too large")
+
+    def test_a_backend_that_is_not_running_says_so(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("refused", request=request)
+
+        with self._client(handler) as client:
+            response = client.get("/api/status")
+        self.assertEqual(response.status_code, 502)
+        detail = response.json()["detail"]
+        self.assertIn("not reachable", detail)
+        # The message has to name what to start, or it only says something broke.
+        self.assertIn("run.py", detail)
+
+    def test_hop_by_hop_headers_are_dropped_but_ordinary_ones_survive(self) -> None:
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["names"] = {key.lower() for key in request.headers}
+            seen["content_type"] = request.headers.get("content-type")
+            return httpx.Response(200, json={})
+
+        with self._client(handler) as client:
+            response = client.get("/api/status", headers={
+                "Upgrade": "websocket",
+                "TE": "trailers",
+                "Content-Type": "application/json",
+            })
+
+        self.assertEqual(response.status_code, 200)
+        # These describe the browser's connection to this host, not the message.
+        self.assertNotIn("upgrade", seen["names"])
+        self.assertNotIn("te", seen["names"])
+        # The headers the backend actually reads have to arrive.
+        self.assertEqual(seen["content_type"], "application/json")
+        # The host must be the backend's, not the one the browser asked for.
+        self.assertIn("host", seen["names"])
+
+    def test_the_proxy_does_not_shadow_the_static_mount(self) -> None:
+        # The editor itself is still served from this origin.
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise AssertionError("a page request must not reach the backend")
+
+        with self._client(handler) as client:
+            self.assertEqual(client.get("/viewer.html").status_code, 200)
+            self.assertEqual(client.get("/index.html").status_code, 200)
+
+
+class BackendOriginTest(unittest.TestCase):
+    def test_the_port_follows_the_backend_environment_variable(self) -> None:
+        previous = os.environ.get("RGBDE_BACKEND_PORT")
+        os.environ["RGBDE_BACKEND_PORT"] = "8123"
+        os.environ.pop("RGBDE_BACKEND_ORIGIN", None)
+        try:
+            # 127.0.0.1 rather than localhost: the name can resolve to the IPv6
+            # loopback first, and the backend binds IPv4.
+            self.assertEqual(default_backend_origin(), "http://127.0.0.1:8123")
+        finally:
+            if previous is None:
+                os.environ.pop("RGBDE_BACKEND_PORT", None)
+            else:
+                os.environ["RGBDE_BACKEND_PORT"] = previous
+
+    def test_an_explicit_origin_wins_and_loses_its_trailing_slash(self) -> None:
+        os.environ["RGBDE_BACKEND_ORIGIN"] = "http://elsewhere:9000/"
+        try:
+            self.assertEqual(default_backend_origin(), "http://elsewhere:9000")
+        finally:
+            os.environ.pop("RGBDE_BACKEND_ORIGIN", None)
