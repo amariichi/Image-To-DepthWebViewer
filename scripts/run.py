@@ -13,6 +13,9 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from ports import require_free_port  # noqa: E402
+
 
 def _python() -> str:
     return sys.executable
@@ -114,6 +117,12 @@ def monitor(processes: list[tuple[str, subprocess.Popen]]) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
+    # Both are checked before either is launched. Starting the backend and then
+    # failing on the frontend leaves the stack half up and shuts it down again,
+    # which buries the one line that says what is wrong.
+    require_free_port(int(os.environ.get("RGBDE_BACKEND_PORT", "8000")), "backend")
+    require_free_port(int(os.environ.get("RGBDE_FRONTEND_PORT", "5173")), "frontend")
+
     backend = launch_backend()
     frontend = launch_frontend(args)
     scheme = "https" if (args.https or args.cert) else "http"
