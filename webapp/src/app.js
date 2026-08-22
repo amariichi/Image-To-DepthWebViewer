@@ -53,7 +53,10 @@ const dropHint = document.getElementById('drop-hint');
 const statusBox = document.getElementById('status');
 const mirrorPanel = document.getElementById('control-panel-mirror');
 
-const API_BASE = window.__RGBDE_API_BASE__ || 'http://localhost:8000';
+// Same origin by default, so the request carries the page's own scheme and
+// host. Naming the backend directly made this a cross-origin plain-text
+// call from an HTTPS page, which each browser decides about differently.
+const API_BASE = window.__RGBDE_API_BASE__ ?? '';
 
 const bindings = {
   magnificationValue: document.querySelector('[data-bind="magnificationValue"]'),
