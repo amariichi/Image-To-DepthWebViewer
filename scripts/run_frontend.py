@@ -13,6 +13,9 @@ from pathlib import Path
 
 import uvicorn
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from ports import require_free_port  # noqa: E402
+
 DEFAULT_PORT = int(os.environ.get("RGBDE_FRONTEND_PORT", "5173"))
 DEFAULT_HOST = os.environ.get("RGBDE_FRONTEND_HOST", "0.0.0.0")
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -170,6 +173,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
+    # Before the certificate is issued and the addresses are printed, so a port
+    # that cannot be had is said plainly instead of arriving as an errno after
+    # three lines that read as success.
+    require_free_port(args.port, "frontend", args.host)
+
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
     from server.viewer_host import app
