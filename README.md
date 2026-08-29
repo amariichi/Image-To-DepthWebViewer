@@ -6,7 +6,14 @@ Language / 言語: [English](#english) | [日本語](#日本語)
 ## English
 
 ### Overview
-This repository now ships a two-part toolchain: a WebGL viewer in `webapp/` and a FastAPI backend in `server/`. Raw JPG/PNG images are uploaded through the UI, the backend runs Apple Depth Pro (pulled in as the `third_party/ml-depth-pro` submodule plus `depth-pro_rgbde.py`) to infer depth, and the resulting depth-augmented PNG (RGBDE PNG) streams straight back to the browser for preview and download. Generated RGBDE PNGs include Depth Pro focal length metadata, and metadata-bearing RGBDE files initialize the Geometry FOV from that camera estimate. Precomputed RGBDE assets remain fully supported. From the viewer you can export the adjusted mesh and texture as a binary glTF (`.glb`) with an unlit material (`KHR_materials_unlit`) for DCC packages such as Blender. While inspecting the scene you can switch between linear/log depth, apply magnification (0.1×–100×), clamp the far plane (1–1000 m), and tune both reconstruction and display FOVs in real time.
+Turn one photograph into a scene you can look around. A FastAPI backend (`server/`) runs Apple Depth Pro over a JPEG or PNG, and a WebGL viewer (`webapp/`) rebuilds the result as a metric 3D mesh. On a phone, the front camera then tracks your head, so the screen behaves like a window onto that scene at life size.
+
+Two front ends share the pipeline:
+
+- **Desktop editor** (`webapp/index.html`) — generate depth and shape it live: linear or log depth, 0.1×–100× magnification, a 1–1000 m far clip, and separate reconstruction and display FOVs. Preview in 2D or side-by-side stereo, view it in a VR headset or on a Looking Glass display, and export the adjusted mesh and texture as binary glTF (`.glb`) with an unlit material (`KHR_materials_unlit`) for Blender and other DCC packages.
+- **Mobile viewer** (`webapp/viewer.html`) — head-tracked and touch-first. Paste an image on the phone, or publish a scene from the editor.
+
+Depth travels as an **RGBDE PNG**: one PNG carrying the source image in its left half and, in the right half, depth in metres × 10000 as a little-endian uint32 packed across the four RGBA bytes. Depth Pro's focal-length estimate goes into the file's metadata, so reopening a file restores the reconstruction FOV it was built with. Existing RGBDE files load by drag and drop. Depth Pro itself arrives as the `third_party/ml-depth-pro` submodule, driven by `depth-pro_rgbde.py`.
 
 ### Getting Started
 1. Initialise the repo (installs requirements, creates `.venv`, pulls Depth Pro submodule):
@@ -59,7 +66,7 @@ Open `/viewer.html` on a phone or tablet and use its front camera to move the vi
 - **Published scene:** load or generate RGBDE in the desktop editor, make any adjustments, and press **Publish to Mobile**. The relay keeps one optimized full GLB plus a reduced fallback in the memory of the process serving these pages. Reloading the page does not clear it; stopping that process does.
 - **Paste image:** use the mobile **Paste image** button, keyboard paste, or **Details → Choose image** with an ordinary JPEG/PNG. The image is posted to the same-origin `/api/process`, the existing Depth Pro backend returns an RGBDE PNG, and the phone constructs the metric mesh in a Web Worker. This path does not require a desktop publish.
 
-The route also runs the other way. Depth inference happens on this machine, so an image pasted on the phone is generated here and the RGBDE passes through this host on its way out; a copy is kept. **Open mobile image** in the editor opens that copy, which puts a phone-pasted scene into the desktop pipeline — Depth Magnification, Geometry FOV, glTF export, VR, Looking Glass — with nothing uploaded from the phone and nothing charged to a metered connection. It is a pull, so a scene being worked on in the editor is never replaced because someone picked up the phone. The button reports the file, lens and time it is offering, and is greyed out until the phone has generated something.
+A scene pasted on the phone can also come back to the desktop. Depth inference runs on this machine either way, so the RGBDE for a phone-pasted image passes through this host on its way out, and a copy stays behind. **Open mobile image** in the editor opens that copy, putting the phone's scene into the full desktop pipeline — Depth Magnification, Geometry FOV, glTF export, VR, Looking Glass — without the phone uploading anything or spending data. It is a pull, not a push, so a scene you are working on in the editor is never replaced because someone picked up the phone. The button shows the file, lens, and time it is offering, and stays greyed out until the phone has generated something.
 
 On the phone, open the serving machine's page, for example `https://192.168.1.5:5173/viewer.html`.
 
@@ -77,26 +84,42 @@ tailscale serve 5173
 
 If you use Tailscale, this serves the port over your tailnet with a genuine certificate, so there is no warning and nothing to install on the phone. It stays inside your tailnet rather than going out to the internet. `tailscale cert` can also issue certificate files to pass to `--https` with `--cert` and `--key`.
 
-After the scene is ready, press **Start 3D** and hold still while face calibration completes. Start is deliberately a separate tap: a long Depth Pro request can outlive iOS user activation, so the viewer does not pretend it can request the camera automatically afterward. Motion and orientation permission is requested from that Start gesture where the platform requires it. Denying motion leaves camera tracking usable and **Hold level** off. Turning the phone about the screen's vertical axis is corrected in every mode and with Hold either on or off: the tracked eye is read in the heading reference and the scene receives the inverse turn, so the world behind the glass stays where it is in the room. Heading is also subtracted from the gravity tilt a turn explains, which is what Hold and True Window's persistent pitch rely on. **Stop camera** is in Details, and **Start 3D** can restart it later.
+When the scene is ready, press **Start 3D** and hold still while face calibration completes. Start is deliberately a separate tap: a long Depth Pro request can outlive iOS user activation, so the viewer does not pretend it can ask for the camera by itself afterwards. Motion and orientation permission is requested from that same gesture where the platform requires it. Denying motion still leaves camera tracking usable, with **Hold level** off. **Stop camera** is in Details, and **Start 3D** restarts it later.
+
+Turning the phone about the screen's vertical axis is always corrected, in both modes and with Hold on or off. A camera watching your face cannot tell a turned phone from a moved head, so without this the scene would swing with the phone instead of staying put in the room.
 
 The primary controls have these meanings:
 
 | Control | Effect |
 | --- | --- |
-| **Start 3D / Recenter** | Start the front-camera tracker, or capture fresh face and gravity references without reloading the scene. The diagnostic heading reference is refreshed too, but does not affect rendering. |
-| **Hold level** | Add a partial model roll/horizon hold relative to the Start/Recenter posture. True Window always retains a gentle reference-relative phone pitch (0.5 response, capped at 9°) so tipping the glass still changes elevation with Hold off without flipping a deep mesh far enough to expose its back; Hold does not rotate the tracked eye. Its X/Y values are reference-relative while Z is an absolute distance, so rotating that mixed-origin vector would create an orbit rather than a camera shift. Photo mode uses the same gentle Hold roll and no model pitch. Turning the phone is corrected separately from Hold and in both modes, because which way the glass faces is not a stabiliser but what makes it a window: a camera watching a face cannot tell a turned phone from a moved head, and reading the turn as the head alone showed the far edge of the mesh where the near one belonged. Heading additionally removes the portion of gravity roll/tip a turn around screen up explains, and a drifting heading is forbidden from creating or enlarging tilt. The screen-up axis is inferred from the fresh gravity reference, so landscape uses device X rather than the portrait-only device-Y assumption. True Window also applies this separation with Hold off because its pitch remains active then; photo mode with Hold off remains camera-only. Portrait/landscape changes automatically capture fresh sensor references without requesting permission again. |
+| **Start 3D / Recenter** | Start the front-camera tracker, or take fresh face and gravity references without reloading the scene. |
+| **Hold level** | Keep the scene roughly upright when you tilt the phone, measured against how you were holding it at Start/Recenter. It is a partial hold rather than a hard lock, so tilting still changes the view. True Window keeps a gentle pitch response even with this off, which is why tipping the top edge away still raises or lowers your eye level there; photo mode with it off is camera-only. Rotating between portrait and landscape re-captures the sensor references automatically, without asking for permission again. |
 | **Reverse tracking** | On by default to correct the unmirrored front-camera horizontal axis. Turn it off only if left/right feels reversed on the device. The preference is remembered. |
 | **True Window** | Switch between a physically fixed aperture and photo-aligned relief; see below. |
-| **Setback** | In True Window, move the complete uniformly scaled miniature 0/25/50/100/200 mm farther behind the glass. It is not relief-depth magnification. |
+| **Setback** | In True Window, push the whole life-size miniature 0/25/50/100/200 mm further behind the glass. It moves the scene back; it does not stretch its depth. |
 | **Paste image** | Read the current clipboard image. If clipboard access is unavailable or denied, keyboard paste and **Details → Choose image** remain available. |
 | **Reset** | Reset touch rotation, pan, and scale without discarding the source or physical calibration. |
 | **Details → Use size** | Enter the illuminated panel's longer side in millimetres, for a device the built-in table does not have or gets wrong. |
 | **Details → Calibrate** | Correct the tracker's idea of how far away you are. Press **Start 3D** first and let the distance settle, enter your real eye-to-glass distance in millimetres (100 to 1500), then press it and hold still and centred while tracking recentres. The reading beside it stays at `scale 1.000×` until this has been done once, and the result is remembered across reloads. |
-| **Hide UI** | Remove routine chrome. A clean double-tap on empty stage space hides or restores it; reload always starts visible. Build/FOV/error states reveal themselves so the page remains recoverable. |
+| **Hide UI** | Hide the normal controls. A clean double-tap on empty stage space hides or restores them; reload always starts visible. Build/FOV/error states reveal themselves so the page remains recoverable. |
 
-**True Window on** treats the measured glass, physical eye, and metric mesh as one coordinate system. Its neutral pose is **Source exact**: the original capture-camera apex is mapped to the calibrated physical eye, while a robust 0.1-percent near-depth anchor lands on the glass. The transform is one equal X/Y/Z scale plus translation; there is no display-side 50 mm target or camera backoff. Every source-camera ray therefore returns to its original image coordinate at the neutral pose, which keeps a triangle spanning a depth edge hidden there instead of exposing it immediately. Away from that exact reference, lateral eye X uses the source-lens response with a comfort gain of 2.40 in portrait and 2.88 in landscape and a camera-X-only response ceiling of 1.50. This preserves the hardware-matched portrait/landscape feel while making left-edge/right-edge forward/back motion substantially stronger. The pitch-coupled eye Y/Z pair retains its separate depth/framing-matched response and 1.0 ceiling, so top-edge forward/back pitch, approach comfort, the mesh, and its neutral image are unchanged. Close approach remains bounded. These response gains affect camera motion, not model X/Y proportions, so faces are not stretched at rest. Head or device motion still creates a new view and can reveal surfaces that a single image never captured. Initial view and **Reset** automatically fit the complete source frame, using capture FOV, source/viewport aspect, and the reference-eye distance; Details labels this `auto fit`. This may select framing below 1.00×, which expands only a virtual overview aperture and does not move the mesh or source camera. At **1.00× framing** the phone glass is the literal aperture, reachable by zooming back toward 1.00×. The fitted overview is intentionally no longer a literal physical pane. Setback remains an explicit rigid millimetre translation and is included in the parallax depth.
+#### True Window on — the metric window
 
-**True Window off** also preserves the source photograph at the neutral view, but remaps arbitrary metric depth into a bounded, screen-fitted relief. Like StereoSplatViewer photo mode, it builds that relief around the source-camera apex and uniformly maps all three physically tracked eye axes from the comfortable holding distance into that camera space, with a close-approach bound. Its **Relief depth**, disparity blend, visible-front anchoring, and zoom-region refit controls are in Details. The two modes therefore look intentionally similar before movement: on keeps raw metric XYZ and offers the literal aperture at 1.00×, while off prioritizes a manageable relief thickness and can refit that depth to the zoomed region.
+The screen becomes a window. The glass, your eye, and the subject share one life-size space, so leaning to one side lets you see past a near edge and moving closer makes things bigger, the way a real window behaves.
+
+You start from the pose where your eye sits exactly where the camera stood, so the screen shows the original photograph. From there the view changes by however much you move your head or the phone. Sideways movement is boosted slightly, because leaning past an edge is the motion people actually want; portrait and landscape are tuned to feel the same. Up/down and forward/back stay life-size, and coming very close is bounded so it stays comfortable.
+
+Move far enough and you can see round the edges of what the photograph captured, including places it never recorded.
+
+**Reset** and the first view pick a zoom that fits the whole photograph on screen; Details labels this `auto fit`. That view is deliberately wider than the real glass so you can see the entire frame. Pinch back to **1.00×** and the phone's glass is the window at true size.
+
+**Setback** pushes the whole life-size miniature further behind the glass.
+
+#### True Window off — photo-aligned relief
+
+This mode also starts out looking exactly like the photograph, but compresses depth into a thickness that fits the screen. It stays comfortable when the real depth range of a photo is extreme, and it can redistribute that thickness across the region you have zoomed into. **Relief depth** and the related controls are in Details.
+
+The two modes looking identical before you move is intentional; the difference appears once you do. Use on when you want a true-size window, off when you want a comfortable sense of depth.
 
 Touch works with or without the camera:
 
@@ -110,7 +133,13 @@ In photo mode, zooming also refits the visible depth range: content still on scr
 
 **Details** holds the two physical calibrations above, the source FOV/lens, published-scene reload, photo Relief controls, fallback viewing distance, runtime readings, and **Stop camera**. For a raw pasted image without EXIF, Depth Pro estimates the capture focal length and embeds it in the returned RGBDE, so no pre-inference millimetre entry is required. The resulting familiar **Lens (35 mm equivalent)** value can be edited from 10–800 mm and applied with **Rebuild depth**; typing alone does not start inference. The button is available only for a source pasted or chosen in this tab, because a published GLB carries no original photograph. A legacy RGBDE/GLB without any capture FOV opens a blocking but recoverable vertical-FOV prompt before metric geometry is built.
 
-The pasted ordinary image and returned RGBDE travel only to/from this application's same origin. The backend does not retain the upload after responding. The host serving these pages keeps the generated RGBDE in memory so the editor can open it, in the same single slot fashion as a published scene and with the same lifetime: it lives in the serving process, so reloading a page leaves it alone and stopping that process clears it. Only a request the phone marked as its own fills it, and the next one replaces it. To support an explicit lens rebuild, the active tab keeps one filename-free source Blob only in browser memory; a successful source replacement, loading a published scene, navigation, or tab close releases it. Camera frames and face landmarks never leave the phone and are never placed in status or logs. The pinned MediaPipe runtime/model need network access on first use; later loads can use the normal browser cache while it remains present, but clearing site data or an evicted cache requires another download.
+What is kept, and where:
+
+- The pasted image and the returned RGBDE travel only to and from this application's own origin. The backend does not retain the upload after responding.
+- The host serving these pages keeps the generated RGBDE in memory so the editor can open it. One slot, like a published scene and with the same lifetime: only a request the phone marked as its own fills it, the next generation replaces it, and because it lives in the serving process, reloading a page leaves it alone while stopping that process clears it.
+- The active tab keeps one filename-free copy of the source image in browser memory, so **Rebuild depth** can re-run inference at a different lens. Generating from another source, loading a published scene, navigating away, or closing the tab releases it.
+- Camera frames and face landmarks never leave the phone, and never appear in status text or logs.
+- The pinned MediaPipe runtime and model need network access on first use. Later loads reuse the normal browser cache while it survives; clearing site data or an evicted cache means another download.
 
 **Publish to Mobile** sends a smaller asset than **Save glTF**: a JPEG texture capped at 2048 px and two megapixels, a resampled grid, and no normals. A reduced build is uploaded alongside it, and the viewer falls back to that only if the full one fails to load. The relay keeps one scene in the serving process's memory, which a page reload does not touch.
 
@@ -127,7 +156,7 @@ An ordinary panel shows both eyes the same image, so viewing square-on, or with 
 
 
 ### WebXR / XR playback
-- The control panel now includes **Enter VR** and **Enter Looking Glass** buttons (requires a WebXR-enabled Chromium-based browser on HTTPS/localhost).
+- The control panel has **Enter VR** and **Enter Looking Glass** buttons (requires a WebXR-enabled Chromium-based browser on HTTPS/localhost).
 - **PC-tethered OpenXR headsets** (Meta Quest via Link, Valve Index, HTC Vive, Varjo, HP Reverb G2, etc.): launch the vendor’s OpenXR runtime (Meta Quest Link, SteamVR, Windows Mixed Reality, Varjo Base, …), open the viewer in Chrome/Edge on the host PC, then click *Enter VR*. Ending the session returns to the standard canvas.
 - **Looking Glass displays:** install Looking Glass Bridge, connect the display, and click *Enter Looking Glass*. The viewer dynamically loads the official `@lookingglass/webxr` v0.6.0 polyfill to drive the multi-view quilt. Keep Bridge running so the polyfill detects the display. Looking Glass renders many viewpoints at once, so once in XR the model appears freely rotatable even though the mouse-driven offsets stay within the ±30° clamp.
 - **VR controller mapping:** while in VR, the left controller mirrors the desktop interactions—trigger + move to orbit, grip + move to pan, trigger + forward/back to zoom, stick left/right adjusts Geometry FOV (15–120°, default 32°), stick up/down changes Depth Magnification (0.1×–100×), X decreases Far Clip, Y increases Far Clip. Controllers are not rendered in the scene, but inputs remain live. Double-click the canvas to reset if the view drifts.
@@ -151,12 +180,12 @@ An ordinary panel shows both eyes the same image, so viewing square-on, or with 
 - `webapp/src/mobile-levelling.js` / `mobile-chrome.js` – pure device-attitude composition and recoverable UI visibility state.
 - `webapp/src/mobile-publish-mesh.js` – mobile-only grid and texture budgets used during publish, including the reduced fallback profile.
 - `webapp/src/device-metrics.js` – physical screen size per device and the viewing geometry derived from it.
-- `webapp/src/device-tilt.js` – filtered gravity input used by Hold level, plus relative screen heading that may only subtract screen-up-coupled gravity tilt and never render yaw; the pure levelling boundary derives the portrait/landscape transport axis from the captured gravity reference.
+- `webapp/src/device-tilt.js` – filtered gravity input for Hold level, plus the relative screen heading used to correct phone turns.
 - `webapp/src/webxr.js` – WebXR and Looking Glass session lifecycle, including the module preload that keeps the entry click's user activation intact.
 
 ### Third-Party Resources
 - **Apple Depth Pro** – Pulled via `scripts/bootstrap.py` into `third_party/ml-depth-pro`. Usage is governed by Apple’s sample code license (`third_party/ml-depth-pro/LICENSE`). Installers must agree to that license before running the backend.
-- **Looking Glass WebXR Polyfill** – Loaded at runtime from the official CDN (`@lookingglass/webxr`). The package is not bundled with this repo; when used, it remains subject to Looking Glass Factory’s license terms (see the package’s `LICENSE` on npm).
+- **Looking Glass WebXR Polyfill** – Loaded at runtime from unpkg (`@lookingglass/webxr` v0.6.0). The package is not bundled with this repo; when used, it remains subject to Looking Glass Factory’s license terms (see the package’s `LICENSE` on npm).
 - **MediaPipe Tasks Vision / Face Landmarker** – The mobile viewer loads pinned Tasks Vision 1.0.0 code and the float16 Face Landmarker v1 model at runtime. Inference stays in the browser; camera frames and landmarks are not sent to the scene relay.
 - These components are external dependencies and are not redistributed here. If you plan to bundle them, ensure your distribution complies with each provider’s license terms (including any redistribution restrictions).
 
@@ -164,14 +193,21 @@ An ordinary panel shows both eyes the same image, so viewing square-on, or with 
 ## 日本語
 
 ### 概要
-本リポジトリは WebGL ビューア (`webapp/`) と Python/FastAPI バックエンド (`server/`) をセットで提供します。フロントエンドから JPG / PNG をアップロードすると、バックエンドが submodule で取り込んだ Apple Depth Pro（`third_party/ml-depth-pro` と `depth-pro_rgbde.py`）を実行し、右半分に little-endian の uint32 深度を埋め込んだデプス付き PNG（RGBDE PNG）を生成、即座にブラウザへ返します。生成される RGBDE PNG には Depth Pro の推定焦点距離メタデータも埋め込まれ、メタデータを持つ RGBDE を読み込むと、そのカメラ推定値から Geometry FOV が初期化されます。既存の RGBDE PNG をドラッグ＆ドロップで読み込むこともできます。UI では線形／対数デプス、拡大率（0.1×〜100×）、最大距離クロップ（1〜1000 m）、再構成・表示 FOV を調整でき、調整済みメッシュとテクスチャをバイナリ glTF (`.glb`) として書き出して Blender などで再利用できます。
+1枚の写真を、覗き込める風景に変えます。バックエンド（`server/`、FastAPI）が JPEG / PNG に Apple Depth Pro をかけ、WebGL ビューア（`webapp/`）がその結果をメートル単位の3Dメッシュへ組み直します。スマホでは前面カメラが頭の位置を追うので、画面が実寸の風景を覗く窓のように振る舞います。
+
+同じパイプラインを2つのフロントエンドが共有します。
+
+- **デスクトップエディタ**（`webapp/index.html`）— デプスを生成し、その場で調整します。線形／対数デプス、拡大率 0.1×〜100×、最大距離クロップ 1〜1000 m、再構成側と表示側の FOV は別々に指定できます。2D／サイドバイサイド立体のプレビュー、VR ヘッドセットや Looking Glass での表示に対応し、調整済みメッシュとテクスチャはバイナリ glTF（`.glb`、`KHR_materials_unlit` のアンリットマテリアル付き）として書き出して Blender などで再利用できます。
+- **モバイルビューア**（`webapp/viewer.html`）— ヘッドトラッキング対応、タッチ操作前提です。スマホで画像を貼り付けるか、エディタから公開します。
+
+デプスは **RGBDE PNG** で受け渡します。1枚の PNG の左半分に元画像、右半分に「メートル×10000」の深度を little-endian の uint32 として RGBA の4バイトへ詰めた形式です。Depth Pro の推定焦点距離はメタデータに入るため、ファイルを開き直せば、そのとき使った再構成 FOV が復元されます。既存の RGBDE PNG はドラッグ＆ドロップで読み込めます。Depth Pro 本体は submodule（`third_party/ml-depth-pro`）として取得し、`depth-pro_rgbde.py` から呼び出します。
 
 ### 使い方
 1. まず依存関係と Submodule をまとめてセットアップします。
    ```bash
    python scripts/bootstrap.py
    ```
-   上記で `.venv` が作成され、`requirements.txt` と Depth Pro パッケージ（`pip install -e third_party/ml-depth-pro`）がインストールされます。
+   `pip` を更新して `.venv` を作成し、`requirements.txt`（Depth Pro との互換のため NumPy は `<2` に固定）と Depth Pro パッケージ（`pip install -e third_party/ml-depth-pro`）をインストールします。PyTorch、torchvision、timm など Depth Pro が必要とする依存もここで入ります。
    サブモジュール初期化に失敗した場合でもスクリプトが直接 clone を試みますが、`git submodule update --init --recursive` を手動で実行してから再度ブートストラップすることもできます。
 
 2. 仮想環境を有効化します。
@@ -215,7 +251,7 @@ An ordinary panel shows both eyes the same image, so viewing square-on, or with 
 - **公開シーン:** デスクトップエディタで RGBDE を読み込むか生成し、調整して **Publish to Mobile** を押します。relay は最適化した完全版 GLB と縮小フォールバックを1組だけ、**ページを配信しているプロセスのメモリ**に保持します。ページの再読込では消えません。消えるのはそのプロセスを停止したときです。
 - **画像を貼り付け:** モバイルの **Paste image**、キーボード貼り付け、または **Details → Choose image** から通常の JPEG/PNG を選びます。画像は同一オリジンの `/api/process` へ送られ、既存の Depth Pro バックエンドが RGBDE PNG を返し、端末上の Web Worker が実寸メッシュを組み立てます。デスクトップで Publish する必要はありません。
 
-経路は逆向きにも通ります。デプス推定はこのマシンで走るので、スマホで貼り付けた画像もここで生成され、RGBDE は出ていく途中でこの host を通ります。その写しを保持しておき、エディタの **Open mobile image** で開きます。スマホで貼った画像をそのままデスクトップの経路（Depth Magnification、Geometry FOV、glTF 書き出し、VR、Looking Glass）に載せられて、**スマホからは何もアップロードしません**。従量回線に二重の課金が発生しません。pull なので、エディタで作業中のシーンが、誰かがスマホを触ったせいで置き換わることもありません。ボタンには渡せるファイル名・レンズ・時刻が出て、スマホがまだ何も生成していないあいだは押せません。
+スマホで貼り付けたシーンは、デスクトップ側へ戻すこともできます。デプス推定はどちらの経路でもこのマシンで走るので、スマホで貼った画像の RGBDE も出ていく途中でこの host を通り、その写しが手元に残ります。エディタの **Open mobile image** はその写しを開くもので、スマホのシーンをそのままデスクトップの経路（Depth Magnification、Geometry FOV、glTF 書き出し、VR、Looking Glass）に載せられます。**スマホからは何もアップロードせず、通信量も使いません。** push ではなく pull なので、エディタで作業中のシーンが、誰かがスマホを触ったせいで置き換わることもありません。ボタンには渡せるファイル名・レンズ・時刻が表示され、スマホがまだ何も生成していないあいだは押せません。
 
 スマホで配信元 PC のページを開きます（例: `https://192.168.1.5:5173/viewer.html`）。
 
@@ -233,26 +269,42 @@ tailscale serve 5173
 
 Tailscale を使っている場合はこちらが簡単です。tailnet 内に正規の証明書付きで公開されるため警告は出ず、スマホ側に入れるものもありません。インターネットには出ず tailnet 内に閉じます。`tailscale cert` で証明書ファイルを発行し、`--https` に `--cert` / `--key` で渡すこともできます。
 
-シーンの準備後に **Start 3D** を押し、顔の較正が終わるまで静止します。Start を別のタップにしているのは、Depth Pro の長い処理中に iOS のユーザー操作権限が失効し、完了後の自動カメラ要求が拒否されるためです。対応環境では Start の同じ操作からモーションと向きの許可を要求します。モーションを拒否してもカメラ追跡は使え、**Hold level** はオフになります。画面の縦軸まわりに端末を回した分は、全モード・Hold の両状態で補正します。追跡した目を heading 基準で読み、シーンには逆回転を与えるので、ガラスの奥の世界は部屋に対して静止します。heading は同時に、その回転で説明できる重力傾斜を差し引く用途にも使い、これを Hold と Hold off でも残る True Window のピッチが利用します。**Stop camera** は Details にあり、後で **Start 3D** から再開できます。
+シーンの準備ができたら **Start 3D** を押し、顔の較正が終わるまで静止します。Start を別のタップにしているのは、Depth Pro の処理が長引くと iOS のユーザー操作権限が失効し、完了後に自動でカメラを要求しても拒否されるからです。モーションと向きの許可も、対応環境では同じ操作から要求します。モーションを拒否してもカメラ追跡は使え、その場合 **Hold level** はオフになります。**Stop camera** は Details にあり、あとから **Start 3D** で再開できます。
+
+画面の縦軸まわりに端末を回した分は、モードにも Hold の状態にもよらず常に補正します。顔を見ているカメラには「端末が回った」のか「頭が動いた」のかの区別がつかないため、補正しないとシーンが端末と一緒に振れてしまい、部屋に対して静止しません。
 
 主なボタンの意味は次のとおりです。
 
 | ボタン | 効果 |
 | --- | --- |
-| **Start 3D / Recenter** | 前面カメラ追跡を開始します。動作中はシーンを再読込せず、顔・重力の基準を取り直します。診断用heading基準も更新しますが、描画には使いません。 |
-| **Hold level** | Start／Recenter時の持ち方を基準に、モデル側へ弱めの水平／ロール維持を追加します。True WindowではHold offでもガラスを前後に倒した仰角が弱め（0.5倍、最大9°）に残るため、反応を失わず、深いメッシュが裏返るほどは回りません。Holdは追跡した目を回転させません。目のX/Yは基準からの差分、Zは絶対距離なので、原点の異なる3成分を一緒に回すとカメラ移動ではなくオービットになるためです。写真モードも同じ弱めのHoldロールだけを使い、モデルのピッチは加えません。端末を左右に向けた分はHoldとは独立に、両モードで補正します。ガラスがどちらを向いているかは安定化機能ではなく、窓が窓であるための情報だからです。顔を見るカメラは「端末が回った」と「頭が動いた」を区別できず、頭だけと解釈するとメッシュの手前側ではなく奥側の端が見えていました。headingはこれに加えて、画面の縦軸まわりの回転で説明できる重力roll/tipをゼロ方向へ差し引き、headingドリフトから新しい傾きを作ることは禁止します。縦軸は新しい重力基準から推定するため、横画面では縦画面用の端末Yではなく端末Xを使います。Hold offでもピッチが残るTrue Windowにはこの分離を適用し、写真モードのHold offは従来どおりカメラだけで動きます。縦／横画面の切替時は権限を再要求せずセンサー基準を取り直します。 |
+| **Start 3D / Recenter** | 前面カメラ追跡を開始します。動作中に押すと、シーンを再読込せずに顔と重力の基準だけを取り直します。 |
+| **Hold level** | 端末を傾けたとき、Start／Recenter 時の持ち方を基準にシーンの水平をおおむね保ちます。完全な固定ではなく部分的な維持なので、傾けた分の反応は残ります。True Window はこれをオフにしても弱い仰角の反応を残すため、上端を奥へ倒せば見下ろし／見上げが変わります。写真モードでオフにすると、カメラ追跡だけで動きます。縦画面と横画面を切り替えたときは、許可を取り直さずにセンサー基準を自動で取り直します。 |
 | **Reverse tracking** | 前面カメラの非ミラー座標を補正するため、デフォルトでオンです。端末上で左右が逆に感じる場合だけオフにします。設定は保存されます。 |
 | **True Window** | 実寸の固定窓と、元写真を再現する relief を切り替えます。下記参照。 |
-| **Setback** | True Window で、均一スケールのミニチュア全体をガラスから 0/25/50/100/200 mm 奥へ移動します。relief の厚みとは別物です。 |
+| **Setback** | True Window で、実寸のミニチュア全体をガラスの奥へ 0/25/50/100/200 mm 下げます。奥に動かすだけで、奥行きを伸ばすものではありません。 |
 | **Paste image** | クリップボードの画像を読みます。許可されない場合も、キーボード貼り付けと **Details → Choose image** が使えます。 |
 | **Reset** | 元画像や物理較正を捨てず、タッチ回転・移動・倍率だけを初期化します。 |
 | **Details → Use size** | 内蔵の端末表に無い、または値が合わない機種で、発光パネルの長辺をミリメートルで入力します。 |
 | **Details → Calibrate** | 追跡側が持っている「あなたまでの距離」を補正します。先に **Start 3D** を押して距離が落ち着くのを待ち、実際の目からガラスまでの距離をミリメートル（100〜1500）で入れて押し、再センタリングのあいだは中央で静止します。隣の表示は一度も較正していないあいだ `scale 1.000×` のままで、結果は再読込後も保存されます。 |
 | **Hide UI** | 通常UIを消します。何もない表示領域を正しくダブルタップすると非表示／再表示できます。再読込時は必ず表示から始まり、生成・FOV・エラーは自動で現れるため復旧不能になりません。 |
 
-**True Window on** では、実測したガラス面・観察者の目・メートル単位のメッシュを同じ座標系で扱います。基準姿勢は **Source exact** です。元の撮影カメラ頂点を較正済みの実際の目へ合わせ、カメラ軸深度の0.1パーセンタイルを安定した近接アンカーとしてガラスへ置きます。変換はx/y/zで同じ一様倍率と平行移動だけで、表示側の50mm目標やカメラ後退はありません。そのため基準姿勢では全撮影光線が元画像の座標へ戻り、深度境界を跨ぐ三角形も開始直後から別視点へ露出しません。この基準からの目移動では、横方向Xは撮影レンズ由来の応答へ縦画面2.40倍・横画面2.88倍の補正を加え、X専用の応答上限を1.50にします。実機で揃った縦横の体感比を保ちながら、左右端を奥／手前へ振る動きだけを大きくします。前後傾斜と結びつくY/Zは従来どおり同じ深度／framing補正と1.0上限を使うため、上端を奥／手前へ倒すPitch、接近時の快適性、メッシュ、基準画像は変わりません。これはカメラ移動の倍率であり、メッシュのX/Y比や基準姿勢の顔形状は変えません。過度な接近も制限し、Source exactは保持されます。実際に頭や端末を動かせば新しい視点になるため、1枚の画像に写っていない面が現れる可能性は残ります。初期表示と **Reset** は、撮影FOV、画像と画面の縦横比、基準となる目の距離から元画像全体を自動で収め、Detailsには `auto fit` と表示します。このとき1.00×未満になる場合は投影上の確認窓だけが広がり、メッシュや撮影カメラは動きません。**Framing 1.00×** は実物のガラスをそのまま窓にする表示で、ピンチで1.00×まで拡大すれば戻せます。自動フィットの全体表示は意図的に実物どおりの窓ではありません。Setbackは明示的なミリメートル単位の剛体移動で、視差計算の奥行きにも含まれます。
+#### True Window on — 実寸の窓
 
-**True Window off** も中立視点では元写真を再現しますが、実深度を画面内へ収まる有限のreliefへ再割り当てます。StereoSplatViewerの写真モードと同様に、撮影カメラの頂点を基準にreliefを作り、実際の保持距離で得た目のX/Y/Zを同じ倍率でそのカメラ空間へ写像し、過度な接近を制限します。**Relief depth**、disparity blend、手前面の固定、ズーム範囲への深度再割当はDetailsにあります。そのため動かす前の両モードが似て見えるのは意図どおりです。onはメートルXYZを保持し1.00×で実物の窓を使えますが、offは扱いやすい厚みを優先し、ズーム範囲へ深度を再配分できます。
+画面を窓として扱うモードです。ガラス面・あなたの目・被写体が実寸の同じ空間にあるので、体を横にずらせば手前のものの向こう側が見え、近づけば大きく見えます。実際の窓と同じ振る舞いです。
+
+最初は、撮影したカメラのあった位置にちょうどあなたの目が来る状態から始まります。そのため画面は元の写真そのもので、そこから頭や端末を動かした分だけ視点が変わります。左右方向は、端から奥を覗き込む動きが実際に使われるため、やや強めにしてあります（縦持ちと横持ちで体感が揃うよう調整済みです）。上下と前後は実寸どおりで、近づきすぎは快適さのため制限されます。
+
+大きく動かせば、写真に写っている範囲の外側、つまり元画像が記録していない面が見えることもあります。
+
+**Reset** と初期表示では、写真全体が画面に収まる倍率を自動で選びます（Details に `auto fit` と表示）。この表示は全体を見渡すためのもので、意図的に実物のガラスより広くなっています。ピンチで **1.00×** まで戻すと、端末のガラスがそのまま実寸の窓になります。
+
+**Setback** は、実寸のミニチュア全体をガラスの奥へ下げる操作です。
+
+#### True Window off — 写真基準の relief
+
+こちらも最初は元の写真どおりに見えますが、奥行きを画面に収まる厚みへ圧縮します。奥行きの幅が極端な写真でも見やすく、ズームした範囲に合わせて厚みを配り直せます。**Relief depth** と関連する設定は Details にあります。
+
+動かす前に両モードがそっくりなのは意図どおりで、違いは動かしてから出ます。実寸の窓が欲しいときは on、扱いやすい立体感が欲しいときは off です。
 
 タッチ操作はカメラの有無にかかわらず使えます。
 
@@ -266,7 +318,13 @@ Tailscale を使っている場合はこちらが簡単です。tailnet 内に�
 
 **Details** には、上の2つの物理較正のほか、ソースFOV／撮影レンズ、公開シーンの再読込、写真 Relief、予備の視距離、実行時測定値、**Stop camera** があります。EXIFのない通常画像を貼り付けた場合はDepth Proが撮影焦点距離を推定して返却RGBDEへ埋め込むため、推論前のmm入力は必須ではありません。表示された **Lens (35 mm equivalent)** は10〜800mmの範囲で編集でき、**Rebuild depth** を押したときだけ再推論します。入力中に勝手に推論は始まりません。このボタンは同じタブで貼り付け／選択した元画像にだけ使え、公開GLBには元写真がないため無効です。撮影FOVを一切持たない古い RGBDE/GLB は、実寸メッシュを作る前に復旧可能な垂直FOV確認画面を出します。
 
-貼り付けた通常画像と返却RGBDEが通信するのは、このアプリの同一オリジンだけです。バックエンドは応答後にアップロードを保持しません。ページを配信している host 側は、エディタから開けるように生成された RGBDE をメモリに保持します。公開シーンと同じ1枠方式・同じ寿命です。**配信プロセスの中にあるので、ページを再読込しても残り、そのプロセスを停止すると消えます。**入るのはスマホが自分のものとして印を付けたリクエストの結果だけで、次の生成が来れば置き換わります。焦点距離の明示的な再推論のため、現在のタブはファイル名を持たない元画像Blobを1つだけブラウザメモリに保持します。別の元画像の生成成功、公開シーン読込、移動、タブ終了で解放されます。カメラ映像と顔ランドマークは端末外へ出ず、ステータスやログにも入りません。固定版 MediaPipe ランタイム／モデルは初回だけネットワーク取得が必要です。以後は残っている通常のブラウザキャッシュを利用できますが、サイトデータ消去やキャッシュ退避後は再取得が必要です。
+どこに何が残るか:
+
+- 貼り付けた画像と返却された RGBDE が行き来するのは、このアプリの同一オリジンだけです。バックエンドは応答後にアップロードを保持しません。
+- ページを配信している host は、エディタから開けるように生成された RGBDE をメモリに保持します。公開シーンと同じ1枠方式・同じ寿命で、入るのはスマホが自分のものとして印を付けたリクエストの結果だけ、次の生成が来れば置き換わります。配信プロセスの中にあるので、ページを再読込しても残り、そのプロセスを停止すると消えます。
+- 現在のタブは、**Rebuild depth** で別のレンズ値から推論し直せるように、ファイル名を持たない元画像のコピーを1つだけブラウザメモリに保持します。別の元画像での生成成功、公開シーンの読込、ページ移動、タブを閉じるのいずれかで解放されます。
+- カメラ映像と顔ランドマークは端末の外に出ず、ステータス表示にもログにも入りません。
+- 固定版の MediaPipe ランタイムとモデルは、初回だけネットワークを使います。以後は通常のブラウザキャッシュが残っているあいだ再利用され、サイトデータの消去やキャッシュ退避のあとは再取得になります。
 
 **Publish to Mobile** は **Save glTF** より小さいデータを送ります（JPEG テクスチャ・一辺2048px かつ200万画素以下、再サンプリングしたグリッド、法線なし）。同時に縮小版もアップロードし、完全版の読み込みに失敗したときだけそちらへ切り替えます。relay が保持するのは1シーンのみで、**配信プロセスのメモリ**にあります。ページの再読込では消えません。
 
@@ -283,13 +341,13 @@ URL に `?debug=1` を付けると、追跡と性能の詳細な実測値が表�
 
 
 ### WebXR / XR 再生
-- コントロールパネルに **Enter VR** / **Enter Looking Glass** ボタンを追加しました（WebXR 対応の Chromium 系ブラウザ + HTTPS/localhost が必要）。
+- コントロールパネルに **Enter VR** / **Enter Looking Glass** ボタンがあります（WebXR 対応の Chromium 系ブラウザ + HTTPS/localhost が必要）。
 - **PC 接続型 OpenXR ヘッドセット**（Meta Quest + Link、Valve Index、HTC Vive、Varjo、HP Reverb G2 など）: 各ベンダーの OpenXR ランタイム（Quest Link、SteamVR、Windows Mixed Reality、Varjo Base など）を起動し、PC の Chrome / Edge でビューアを開いて *Enter VR* を押すと没入セッションが開始します。終了すると通常表示に戻ります。
-- **Looking Glass displays**: Looking Glass Bridge を起動しディスプレイを接続してから *Enter Looking Glass* を押すと、公式 `@lookingglass/webxr` v0.6.0 polyfill を動的に読み込み、多視点キルト描画に切り替わります。Bridge を常時起動しておいてください。多視点キルトにより表示側で広い角度が補間されるため、XR中はモデルを自由に回しているように見えます（マウス操作の回転制限自体は従来どおり ±30° です）。
+- **Looking Glass displays**: Looking Glass Bridge を起動しディスプレイを接続してから *Enter Looking Glass* を押すと、公式 `@lookingglass/webxr` v0.6.0 polyfill を動的に読み込み、多視点キルト描画に切り替わります。Bridge を常時起動しておいてください。多視点キルトにより表示側で広い角度が補間されるため、XR中はモデルを自由に回しているように見えます（マウス操作の回転制限自体は ±30° のままです）。
 - **VR コントローラー操作**: 左コントローラーでマウス操作に相当するインタラクションが行えます。トリガー＋左右／上下で回転、グリップ＋移動で平行移動、トリガー＋前後でズーム、スティック左右で再構成 FOV、スティック上下で Depth Magnification、X ボタンで Far Clip を短く、Y ボタンで Far Clip を大きくできます。コントローラー自体は描画されませんが、入力は反映されます。ビューが崩れた場合はキャンバスをダブルクリックで初期状態に戻せます。
 - **ヒント表示**: VR セッション開始時に操作チートシートが表示され、その後は操作に応じて 1 行のヒントがポップアップします。不要な場合は *Enter VR* の横にある *Show XR hints* のチェックを外すと非表示にでき、必要になったら再度チェックを入れて表示を戻せます。
 - **Looking Glass と VR の切り替え**: Looking Glass の WebXR ポリフィルは `navigator.xr` を差し替えたまま復元しないため、Looking Glass を Exit した直後に *Enter VR* を押すとブラウザがセッションを拒否して「VR session blocked: click Enter VR again」と表示されます。現状はページをリロード（例: `Ctrl+F5`）した後に VR を開始してください。
-- WebXR API は HTTPS などのセキュアオリジンでのみ利用可能です。Quest ブラウザでは自己署名証明書は使えないため、本番では正規証明書を用意してください。ローカル開発での `http://localhost` アクセスは例外的にセキュア扱いとなるため、その場合は従来どおり動作します。
+- WebXR API は HTTPS などのセキュアオリジンでのみ利用可能です。Quest ブラウザでは自己署名証明書は使えないため、本番では正規証明書を用意してください。ローカル開発での `http://localhost` アクセスはブラウザが例外的にセキュア扱いにするため、そのまま動作します。
 - XR セッション中は 2D UI が自動的に非表示になります。終了後に必要なら「Hide UI」ボタンで再表示できます。
 
 ### ディレクトリ構成
@@ -307,11 +365,11 @@ URL に `?debug=1` を付けると、追跡と性能の詳細な実測値が表�
 - `webapp/src/mobile-levelling.js` / `mobile-chrome.js` – 端末姿勢の純粋な合成と、復旧可能なUI表示状態。
 - `webapp/src/mobile-publish-mesh.js` – Publish時にだけ使うモバイル用グリッド／テクスチャ上限と、縮小フォールバックプロファイル。
 - `webapp/src/device-metrics.js` – 端末ごとの画面実寸と、そこから導出する視距離ジオメトリ。
-- `webapp/src/device-tilt.js` – Hold level が使うフィルタ済み重力ベクトルと、画面縦軸由来の重力傾斜を差し引くだけでyaw描画しない相対画面方位。純粋なlevelling境界が、保存した重力基準から縦／横画面の回転軸を導出します。
+- `webapp/src/device-tilt.js` – Hold level が使うフィルタ済み重力ベクトルと、端末の左右の向きを補正する相対画面方位。
 - `webapp/src/webxr.js` – VR / Looking Glass 向け WebXR セッション管理。
 
 ### サードパーティリソース
 - **Apple Depth Pro** – `scripts/bootstrap.py` 実行時に `third_party/ml-depth-pro` として取得されます。利用には Apple のサンプルコードライセンス (`third_party/ml-depth-pro/LICENSE`) への同意が必要です。
-- **Looking Glass WebXR Polyfill** – 実行時に CDN (`@lookingglass/webxr`) から読み込みます。このリポジトリには同梱していませんが、利用時は Looking Glass Factory のライセンス（パッケージの `LICENSE` 参照）に従ってください。
+- **Looking Glass WebXR Polyfill** – 実行時に unpkg (`@lookingglass/webxr` v0.6.0) から読み込みます。このリポジトリには同梱していませんが、利用時は Looking Glass Factory のライセンス（パッケージの `LICENSE` 参照）に従ってください。
 - **MediaPipe Tasks Vision / Face Landmarker** – モバイルビューアが固定バージョンの Tasks Vision 1.0.0 と float16 Face Landmarker v1 モデルを実行時に読み込みます。推論はブラウザ内で完結し、カメラ映像やランドマークはシーン relay へ送信されません。
 - これら外部コンポーネントを成果物に含める場合は、各提供元のライセンス条件（再配布可否や同梱義務を含む）に従ってください。
