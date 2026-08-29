@@ -1,5 +1,9 @@
 export const MAX_INSPECTION_ANGLE = Math.PI / 6;
-export const MIN_TOUCH_SCALE = 0.45;
+// A wide reconstruction viewed on a portrait phone can need far less than
+// 0.2× framing before its complete source frame is reachable. True Window uses
+// this as an overview aperture only; it never scales the model or moves the
+// reference camera. The low bound still prevents a degenerate projection.
+export const MIN_TOUCH_SCALE = 0.02;
 export const MAX_TOUCH_SCALE = 3;
 
 const ROTATION_RADIANS_PER_PIXEL = (Math.PI / 180) * 0.12;

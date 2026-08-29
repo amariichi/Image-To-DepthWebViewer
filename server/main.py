@@ -4,12 +4,14 @@ import io
 import logging
 import unicodedata
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING
 from urllib.parse import quote
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+
+from rgbde_metadata import validate_focal_length_35mm
 
 if TYPE_CHECKING:
     from .depth_service import DepthProService
@@ -49,14 +51,22 @@ async def status() -> JSONResponse:
 
 
 @app.post("/api/process")
-async def process_image(image: Annotated[UploadFile, File(...)]) -> StreamingResponse:
+async def process_image(
+    image: UploadFile = File(...),
+    focal_length_35mm: float | None = Query(default=None),
+) -> StreamingResponse:
     service = get_depth_service()
     content = await image.read()
     if not content:
         raise HTTPException(status_code=400, detail="No image payload received.")
 
     try:
-        result = await service.generate_rgbde(content, image.filename)
+        focal_override = validate_focal_length_35mm(focal_length_35mm)
+        result = await service.generate_rgbde(
+            content,
+            image.filename,
+            focal_length_35mm=focal_override,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # pragma: no cover - defensive logging

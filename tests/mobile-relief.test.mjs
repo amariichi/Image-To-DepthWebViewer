@@ -7,6 +7,7 @@ import {
   FRONT_SAMPLE_STRIDE,
   anchorVisibleFrontToScreen,
   createReliefInteractionMatrix,
+  createTrueWindowInteractionMatrix,
   findVisibleDepthRange,
   createMobileReliefScene,
   estimateUniformScaleDepthSpan,
@@ -95,6 +96,27 @@ test('baseline view preserves image-plane size even when raw far depth is extrem
 });
 
 
+test('photo relief uses the source-camera apex when a capture lens is known', () => {
+  const relief = createMobileReliefScene({
+    scene: sourceScene,
+    sourceAspect: 1,
+    screenWidth: 2,
+    screenHeight: 2,
+    baselineEyeZ: 5,
+    captureFovDeg: 60,
+    depthSpan: 0.25,
+    occupancy: 0.9,
+  });
+  const expectedApex = (relief.imageRect.height / 2) / Math.tan(Math.PI / 6);
+  assert.ok(Math.abs(relief.captureApex - expectedApex) < 1e-12);
+  const eye = { x: 0, y: 0, z: relief.captureApex };
+  const topLeft = projectPoint([...relief.positions.slice(0, 3)], eye);
+  const topRight = projectPoint([...relief.positions.slice(3, 6)], eye);
+  assert.ok(Math.abs(topLeft[0] + 0.9) < 1e-6);
+  assert.ok(Math.abs(topRight[0] - 0.9) < 1e-6);
+});
+
+
 test('relief fit preserves source aspect inside a portrait screen', () => {
   const relief = createMobileReliefScene({
     scene: sourceScene,
@@ -145,6 +167,17 @@ test('pinch scales the miniature uniformly, in depth as well as on screen', () =
     interaction: { panX: 0, panY: 0, yaw: 0, pitch: 0, scale: 3 },
   });
   assert.ok(mat4.transformPoint(zoomed, [0, 0, 0]).every((v) => Math.abs(v) < 1e-9));
+});
+
+
+test('True Window spins the turntable before applying touch tip', () => {
+  const matrix = createTrueWindowInteractionMatrix({
+    interaction: { yaw: Math.PI / 2, pitch: Math.PI / 6 },
+  });
+  const modelUp = mat4.transformPoint(matrix, [0, 1, 0]);
+  assert.ok(Math.abs(modelUp[0]) < 1e-6);
+  assert.ok(Math.abs(modelUp[1] - Math.cos(Math.PI / 6)) < 1e-6);
+  assert.ok(Math.abs(modelUp[2] - Math.sin(Math.PI / 6)) < 1e-6);
 });
 
 

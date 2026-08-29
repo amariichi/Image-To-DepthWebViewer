@@ -64,6 +64,24 @@ export function createMobileSceneManifest({
   };
 }
 
+export async function fetchPublishedSceneManifest({
+  fetchImpl = globalThis.fetch,
+} = {}) {
+  if (typeof fetchImpl !== 'function') {
+    throw new Error('Fetch is unavailable for mobile scene loading.');
+  }
+  const response = await fetchImpl('/viewer-api/scene/manifest', { cache: 'no-store' });
+  if (!response.ok) {
+    throw new Error(`Scene manifest failed with HTTP ${response.status}.`);
+  }
+  const envelope = await response.json();
+  if (envelope.available
+      && (!Number.isInteger(envelope.revision) || envelope.revision < 1)) {
+    throw new Error('Scene manifest returned an invalid revision.');
+  }
+  return envelope;
+}
+
 export async function fetchPublishedScenePair({
   fetchImpl = globalThis.fetch,
   knownRevision = 0,

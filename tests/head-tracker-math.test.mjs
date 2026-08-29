@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  CANONICAL_CYCLOPEAN_EYE_CM,
   DEFAULT_XY_GAIN,
   DEFAULT_Z_GAIN,
   FACE_LANDMARKER_MODEL_URL,
@@ -12,6 +13,7 @@ import {
   createEyeCalibration,
   createPoseFilter,
   FACE_LANDMARKER_DELEGATES,
+  extractMetricEyePosition,
   extractMetricHeadTranslation,
   mapMetricPoseToEyePose,
   preferredDelegates,
@@ -217,6 +219,7 @@ test('tracker metrics expose actual camera size and time to first stable pose', 
     cameraHeight: 720,
     metricAvailable: false,
     headDistanceMm: 0,
+    correctedHeadDistanceMm: 0,
     rawHeadXMm: 0,
     calibratedHeadXMm: 0,
     poseSource: 'none',
@@ -228,24 +231,30 @@ test('tracker metrics expose actual camera size and time to first stable pose', 
 });
 
 
-test('metric head translation is read from the facial transformation matrix', () => {
-  // Column-major 4x4; the translation column holds centimetres in camera space
-  // with -z pointing away from the camera.
+test('metric cyclopean eye is transformed through the full facial matrix', () => {
+  // Column-major 4x4. The canonical eye is offset from the face-model origin,
+  // so an identity rotation adds that offset to the translation column.
   const matrix = new Float32Array(16);
   matrix[0] = 1; matrix[5] = 1; matrix[10] = 1; matrix[15] = 1;
   matrix[12] = 3.5;
   matrix[13] = -1.25;
   matrix[14] = -34;
-  const metric = extractMetricHeadTranslation({ data: matrix });
+  const metric = extractMetricEyePosition({ data: matrix });
   assert.ok(Math.abs(metric.xMm - 35) < 1e-6);
-  assert.ok(Math.abs(metric.yMm + 12.5) < 1e-6);
-  assert.ok(Math.abs(metric.distanceMm - 340) < 1e-6);
+  assert.ok(Math.abs(
+    metric.yMm - (-1.25 + CANONICAL_CYCLOPEAN_EYE_CM.y) * 10,
+  ) < 1e-5);
+  assert.ok(Math.abs(
+    metric.distanceMm - Math.abs(-34 + CANONICAL_CYCLOPEAN_EYE_CM.z) * 10,
+  ) < 1e-5);
+  assert.deepEqual(extractMetricHeadTranslation({ data: matrix }), metric);
 
-  assert.equal(extractMetricHeadTranslation(null), null);
-  assert.equal(extractMetricHeadTranslation({ data: new Float32Array(9) }), null);
+  assert.equal(extractMetricEyePosition(null), null);
+  assert.equal(extractMetricEyePosition({ data: new Float32Array(9) }), null);
   const tooClose = new Float32Array(16);
-  tooClose[14] = 0;
-  assert.equal(extractMetricHeadTranslation({ data: tooClose }), null);
+  tooClose[0] = 1; tooClose[5] = 1; tooClose[10] = 1; tooClose[15] = 1;
+  tooClose[14] = -CANONICAL_CYCLOPEAN_EYE_CM.z;
+  assert.equal(extractMetricEyePosition({ data: tooClose }), null);
 });
 
 
@@ -268,6 +277,14 @@ test('metric head motion converts to world units with no tunable gain', () => {
   assert.ok(Math.abs(moved.x - 63 / 65) < 1e-6);
   assert.ok(Math.abs(moved.z - 300 / 65) < 1e-6);
 
+  const movedUpInMetricCamera = mapMetricPoseToEyePose(
+    { xMm: 0, yMm: 32.5, distanceMm: 300 },
+    calibration,
+    { worldUnitMm, mirrorX: false },
+  );
+  assert.ok(Math.abs(movedUpInMetricCamera.y + 0.5) < 1e-6,
+    'metric camera +Y must become display-eye -Y on hardware');
+
   // The horizontal flip is the only handedness control; it must not touch Y or Z.
   const mirrored = mapMetricPoseToEyePose(
     { xMm: 63, yMm: 0, distanceMm: 300 },
@@ -276,6 +293,53 @@ test('metric head motion converts to world units with no tunable gain', () => {
   );
   assert.ok(Math.abs(mirrored.x + moved.x) < 1e-6);
   assert.equal(mirrored.z, moved.z);
+});
+
+
+test('distance calibration scales metric XYZ before one shared bound', () => {
+  const calibration = {
+    metric: { xMm: 10, yMm: -5, distanceMm: 300 },
+  };
+  const corrected = mapMetricPoseToEyePose(
+    { xMm: 50, yMm: 15, distanceMm: 600 },
+    calibration,
+    {
+      worldUnitMm: 50,
+      distanceScale: 0.5,
+      mirrorX: false,
+      minX: -10,
+      maxX: 10,
+      minY: -10,
+      maxY: 10,
+      minZ: 0.1,
+      maxZ: 10,
+    },
+  );
+  assert.deepEqual(
+    { x: corrected.x, y: corrected.y, z: corrected.z },
+    { x: 0.4, y: -0.2, z: 6 },
+  );
+});
+
+
+test('changing world-unit size preserves the filter pose in millimetres', () => {
+  let emitted = null;
+  const tracker = new HeadTracker({
+    video: {},
+    worldUnitMm: 60,
+    baselineEyeZ: 5,
+    onPose: (pose) => { emitted = pose; },
+  });
+  tracker.filter.reset({ x: 0.5, y: -0.25, z: 5, confidence: 1, timestamp: 20 }, 20);
+  tracker.calibration = {
+    center: { x: 0, y: 0 },
+    eyeDistance: 1,
+    baselineEyeZ: 5,
+  };
+  tracker.setViewingGeometry({ worldUnitMm: 90, baselineEyeZ: 4 });
+  assert.ok(Math.abs(emitted.x * 90 - 0.5 * 60) < 1e-9);
+  assert.ok(Math.abs(emitted.z * 90 - 5 * 60) < 1e-9);
+  assert.ok(Math.abs(tracker.calibration.baselineEyeZ - 10 / 3) < 1e-9);
 });
 
 

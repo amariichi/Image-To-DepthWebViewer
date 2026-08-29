@@ -2,13 +2,17 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  DEFAULT_ORIENTATION_SETTLE_MS,
   DEFAULT_TILT_GAIN,
   MAX_TILT_CORRECTION_RAD,
   clampTiltCorrection,
+  computeScreenHeading,
   computeScreenRoll,
+  createGravityFilter,
   createRollFilter,
   createTiltTracker,
   removeOrientationOffset,
+  requestOrientationPermission,
   requestTiltPermission,
   wrapAngle,
 } from '../webapp/src/device-tilt.js';
@@ -115,6 +119,64 @@ test('the roll filter follows the shortest way round rather than unwinding', () 
 });
 
 
+test('screen heading follows the glass normal and is unavailable face-up', () => {
+  assert.ok(Math.abs(deg(computeScreenHeading({ alpha: 25, beta: 90, gamma: 0 })) - 25) < 1e-9);
+  const alpha = 15;
+  const beta = 55;
+  const gamma = 18;
+  const a = alpha * Math.PI / 180;
+  const b = beta * Math.PI / 180;
+  const g = gamma * Math.PI / 180;
+  const normalX = Math.cos(a) * Math.sin(g) + Math.sin(a) * Math.sin(b) * Math.cos(g);
+  const normalY = Math.sin(a) * Math.sin(g) - Math.cos(a) * Math.sin(b) * Math.cos(g);
+  assert.ok(Math.abs(computeScreenHeading({ alpha, beta, gamma })
+    - Math.atan2(normalX, -normalY)) < 1e-12);
+  assert.equal(computeScreenHeading({ alpha: 0, beta: 0, gamma: 0 }), null);
+});
+
+
+test('the gravity filter damps all three axes and ignores malformed events', () => {
+  const filter = createGravityFilter({ timeConstantMs: 1000 });
+  assert.deepEqual(filter.update({ x: 0, y: G, z: 0 }, 0), { x: 0, y: G, z: 0 });
+  const damped = filter.update({ x: G, y: 0, z: G }, 100);
+  assert.ok(damped.x > 0 && damped.x < G * 0.2);
+  assert.ok(damped.y > G * 0.8 && damped.y < G);
+  assert.ok(damped.z > 0 && damped.z < G * 0.2);
+  assert.deepEqual(filter.update({ x: Number.NaN, y: G, z: 0 }, 200), damped);
+});
+
+
+test('the tracker suppresses tiny gravity jitter but accumulates slow motion', async () => {
+  const listeners = new Map();
+  const target = {
+    addEventListener: (type, handler) => listeners.set(type, handler),
+    removeEventListener: (type) => listeners.delete(type),
+  };
+  const held = (degrees) => ({
+    x: -G * Math.sin((degrees * Math.PI) / 180),
+    y: G * Math.cos((degrees * Math.PI) / 180),
+    z: 0,
+  });
+  let timestamp = 0;
+  const published = [];
+  const tracker = createTiltTracker({
+    target,
+    now: () => timestamp,
+    gravityTimeConstantMs: 1,
+    gravityDeadbandRad: (0.5 * Math.PI) / 180,
+    onRoll: (_roll, reading) => published.push(reading),
+  });
+  await tracker.start();
+  listeners.get('devicemotion')({ accelerationIncludingGravity: held(0) });
+  timestamp = 500;
+  listeners.get('devicemotion')({ accelerationIncludingGravity: held(0.1) });
+  assert.equal(published.length, 1);
+  timestamp = 1000;
+  listeners.get('devicemotion')({ accelerationIncludingGravity: held(1) });
+  assert.equal(published.length, 2);
+});
+
+
 test('the tracker starts only with permission and stops listening cleanly', async () => {
   const listeners = new Map();
   const target = {
@@ -146,23 +208,149 @@ test('the tracker starts only with permission and stops listening cleanly', asyn
   tracker.stop();
   assert.equal(tracker.running, false);
   assert.equal(listeners.has('devicemotion'), false);
+  assert.equal(listeners.has('deviceorientation'), false);
   assert.equal(tracker.getRoll(), null);
+  assert.equal(tracker.getHeading(), null);
 });
 
 
-test('a refused motion permission leaves the tracker stopped', async () => {
+test('orientation recenter keeps listeners active and takes fresh sensor samples', async () => {
+  const listeners = new Map();
+  const target = {
+    addEventListener: (type, handler) => listeners.set(type, handler),
+    removeEventListener: (type) => listeners.delete(type),
+  };
+  let motionPermissionRequests = 0;
+  let orientationPermissionRequests = 0;
+  let timestamp = 0;
+  const gravityReadings = [];
+  const headings = [];
+  const tracker = createTiltTracker({
+    target,
+    now: () => timestamp,
+    gravityTimeConstantMs: 1000,
+    motionEvent: {
+      requestPermission: async () => {
+        motionPermissionRequests += 1;
+        return 'granted';
+      },
+    },
+    orientationEvent: {
+      requestPermission: async () => {
+        orientationPermissionRequests += 1;
+        return 'granted';
+      },
+    },
+    onRoll: (_roll, reading) => gravityReadings.push(reading),
+    onHeading: (heading) => headings.push(heading),
+  });
+  assert.equal(await tracker.start(), 'granted');
+  listeners.get('devicemotion')({
+    accelerationIncludingGravity: { x: 0, y: G, z: 0 },
+  });
+  listeners.get('deviceorientation')({ alpha: 10, beta: 90, gamma: 0 });
+
+  tracker.recenter({ settleMs: DEFAULT_ORIENTATION_SETTLE_MS });
+  assert.equal(tracker.running, true);
+  assert.equal(listeners.has('devicemotion'), true);
+  assert.equal(listeners.has('deviceorientation'), true);
+  assert.equal(motionPermissionRequests, 1);
+  assert.equal(orientationPermissionRequests, 1);
+  assert.equal(tracker.getReading(), null);
+  assert.equal(tracker.getSmoothedReading(), null);
+  assert.equal(tracker.getRoll(), null);
+  assert.equal(tracker.getHeading(), null);
+
+  // Samples produced while the hand/display is still completing the quarter
+  // turn must not become the new reference.
+  timestamp = DEFAULT_ORIENTATION_SETTLE_MS - 1;
+  listeners.get('devicemotion')({
+    accelerationIncludingGravity: { x: -G * 0.8, y: G * 0.2, z: 0 },
+  });
+  listeners.get('deviceorientation')({ alpha: 80, beta: 90, gamma: 0 });
+  assert.equal(tracker.getSmoothedReading(), null);
+  assert.equal(tracker.getHeading(), null);
+
+  // The first landscape samples must be taken directly, not blended with the
+  // old portrait vector/heading that lived in a different screen frame.
+  timestamp = DEFAULT_ORIENTATION_SETTLE_MS;
+  listeners.get('devicemotion')({
+    accelerationIncludingGravity: { x: -G, y: 0, z: 0 },
+  });
+  listeners.get('deviceorientation')({ alpha: 100, beta: 90, gamma: 0 });
+  assert.deepEqual(gravityReadings.at(-1), { x: -G, y: 0, z: 0, screenAngle: 0 });
+  assert.ok(Math.abs(deg(headings.at(-1)) - 100) < 1e-9);
+  tracker.stop();
+});
+
+
+test('heading is smoothed across wrapping and optional permission can be denied', async () => {
+  const listeners = new Map();
+  const target = {
+    addEventListener: (type, handler) => listeners.set(type, handler),
+    removeEventListener: (type) => listeners.delete(type),
+  };
+  let timestamp = 0;
+  const headings = [];
+  const tracker = createTiltTracker({
+    target,
+    now: () => timestamp,
+    headingTimeConstantMs: 1000,
+    headingDeadbandRad: 0,
+    onHeading: (heading) => headings.push(heading),
+  });
+  await tracker.start();
+  listeners.get('deviceorientation')({ alpha: 359, beta: 90, gamma: 0 });
+  timestamp = 100;
+  listeners.get('deviceorientation')({ alpha: 1, beta: 90, gamma: 0 });
+  assert.equal(headings.length, 2);
+  assert.ok(Math.abs(deg(wrapAngle(headings[1] - headings[0]))) < 1);
+  tracker.stop();
+
+  const gravityOnly = createTiltTracker({
+    target,
+    motionEvent: { requestPermission: async () => 'granted' },
+    orientationEvent: { requestPermission: async () => 'denied' },
+  });
+  assert.equal(await gravityOnly.start(), 'granted');
+  assert.equal(listeners.has('devicemotion'), true);
+  assert.equal(listeners.has('deviceorientation'), false);
+  gravityOnly.stop();
+});
+
+
+test('orientation-only yaw remains active when motion permission is refused', async () => {
+  const listeners = new Map();
+  const headings = [];
+  const tracker = createTiltTracker({
+    target: {
+      addEventListener: (type, handler) => listeners.set(type, handler),
+      removeEventListener: (type) => listeners.delete(type),
+    },
+    screen: { orientation: { angle: 0 } },
+    motionEvent: { requestPermission: async () => 'denied' },
+    orientationEvent: { requestPermission: async () => 'granted' },
+    onHeading: (heading) => headings.push(heading),
+  });
+  assert.equal(await tracker.start(), 'denied');
+  assert.equal(tracker.running, true);
+  assert.equal(listeners.has('devicemotion'), false);
+  assert.equal(listeners.has('deviceorientation'), true);
+  listeners.get('deviceorientation')({ alpha: 20, beta: 90, gamma: 0 });
+  assert.equal(headings.length, 1);
+  tracker.stop();
+  assert.equal(listeners.has('deviceorientation'), false);
+});
+
+
+test('refusing both sensor permissions leaves the tracker stopped', async () => {
   const tracker = createTiltTracker({
     target: { addEventListener: () => {}, removeEventListener: () => {} },
-    screen: { orientation: { angle: 0 } },
+    motionEvent: { requestPermission: async () => 'denied' },
+    orientationEvent: { requestPermission: async () => 'denied' },
   });
-  const original = globalThis.DeviceMotionEvent;
-  globalThis.DeviceMotionEvent = { requestPermission: async () => 'denied' };
-  try {
-    assert.equal(await tracker.start(), 'denied');
-    assert.equal(tracker.running, false);
-  } finally {
-    globalThis.DeviceMotionEvent = original;
-  }
+  assert.equal(await tracker.start(), 'denied');
+  assert.equal(tracker.running, false);
 });
 
 
@@ -170,5 +358,9 @@ test('platforms without a permission gate report granted', async () => {
   assert.equal(await requestTiltPermission({ motionEvent: undefined }), 'granted');
   assert.equal(await requestTiltPermission({
     motionEvent: { requestPermission: async () => { throw new Error('blocked'); } },
+  }), 'denied');
+  assert.equal(await requestOrientationPermission({ orientationEvent: undefined }), 'granted');
+  assert.equal(await requestOrientationPermission({
+    orientationEvent: { requestPermission: async () => { throw new Error('blocked'); } },
   }), 'denied');
 });

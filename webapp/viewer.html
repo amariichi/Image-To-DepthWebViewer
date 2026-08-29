@@ -7,54 +7,127 @@
     <title>Tracked Window — Image-to-Depth</title>
     <link rel="stylesheet" href="./mobile-viewer.css" />
   </head>
-  <body class="mobile-viewer" data-state="booting">
-    <main class="viewer-stage" aria-label="Head-tracked 3D viewer">
-      <canvas id="viewer-canvas" aria-label="Published 3D scene"></canvas>
+  <body class="mobile-viewer" data-state="booting" data-chrome="visible">
+    <main id="viewer-stage" class="viewer-stage" aria-label="Head-tracked 3D viewer">
+      <canvas id="viewer-canvas" aria-label="3D scene"></canvas>
       <video id="tracking-video" class="tracking-video" playsinline muted aria-hidden="true"></video>
       <pre id="pose-readout" class="pose-readout" aria-hidden="true"></pre>
+      <section id="build-overlay" class="build-overlay" role="status" aria-live="polite" hidden>
+        <span class="build-kicker">Local depth build</span>
+        <strong id="build-phase">Reading image</strong>
+        <span id="build-elapsed">0 s</span>
+      </section>
 
-      <div id="debug-controls" class="debug-controls" aria-label="Presentation tuning">
-        <label for="debug-distance">Viewing distance <output id="debug-distance-value">350</output> mm</label>
-        <input id="debug-distance" type="range" min="150" max="900" step="10" value="350" />
-        <label for="debug-span">Relief depth <output id="debug-span-value">1.00</output></label>
-        <input id="debug-span" type="range" min="0.05" max="40.0" step="0.05" value="1" />
-        <label for="debug-blend">Disparity blend <output id="debug-blend-value">1.00</output></label>
-        <input id="debug-blend" type="range" min="0" max="1" step="0.05" value="1" />
-        <label class="debug-toggle"><input id="debug-anchor" type="checkbox" checked /> Anchor visible front to glass</label>
-        <label class="debug-toggle"><input id="debug-refit" type="checkbox" checked /> Refit depth to zoomed region</label>
-        <label class="debug-toggle"><input id="debug-level" type="checkbox" checked /> Keep upright as device rolls</label>
-      </div>
-
-      <div class="reticle" aria-hidden="true">
-        <span></span>
-        <span></span>
-        <span></span>
-        <span></span>
-      </div>
+      <div class="reticle" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
 
       <header class="viewer-header">
-        <p class="eyebrow">Image-to-Depth / Mobile</p>
-        <p id="scene-label" class="scene-label">Awaiting published scene</p>
+        <p class="eyebrow">Image-to-Depth</p>
+        <p id="scene-label" class="scene-label">Awaiting scene</p>
       </header>
 
       <section id="startup-panel" class="startup-panel" aria-labelledby="viewer-title">
-        <p class="index">01 / TRACKED WINDOW</p>
-        <h1 id="viewer-title">Look through,<br />not at.</h1>
-        <p class="intro">Publish a mesh from the desktop editor, then use the front camera to shift the viewpoint as you move.</p>
-        <button id="start-tracking" class="primary-action" type="button" disabled>Publish a scene first</button>
+        <p class="index">PHYSICAL WINDOW / MOBILE</p>
+        <h1 id="viewer-title">Tracked Window</h1>
+        <p class="intro">Paste a photo here or publish from the desktop editor. The camera stays on this device.</p>
         <p id="viewer-status" class="viewer-status" role="status" aria-live="polite">Checking for a published scene…</p>
-        <p class="gesture-hint">1 finger · rotate&nbsp;&nbsp; 2 fingers · zoom / pan</p>
+        <p class="gesture-hint">Drag · inspect&nbsp;&nbsp; Pinch · scale / pan&nbsp;&nbsp; Double tap · hide UI</p>
       </section>
 
       <nav class="viewer-controls" aria-label="Viewer controls">
-        <button id="recenter-tracking" type="button" disabled>Recenter</button>
-        <button id="enable-levelling" type="button" hidden>Level</button>
-        <button id="flip-tracking-x" type="button">Flip L/R</button>
-        <button id="reload-scene" type="button">Reload scene</button>
-        <button id="stop-tracking" type="button" disabled>Stop camera</button>
+        <button id="start-tracking" class="primary-action" type="button" disabled>Publish or paste</button>
+        <button id="recenter-tracking" type="button" disabled hidden>Recenter</button>
+        <button id="enable-levelling" type="button" aria-pressed="true">Hold level on</button>
+        <button id="flip-tracking-x" type="button" aria-pressed="true">Reverse tracking on</button>
+        <button id="true-window-toggle" type="button" aria-pressed="true">True Window on</button>
+        <button id="setback-cycle" type="button">Setback 0 mm</button>
+        <button id="paste-image" type="button">Paste image</button>
+        <button id="reset-view" type="button">Reset</button>
+        <button id="open-details" type="button" aria-haspopup="dialog">Details</button>
+        <button id="hide-ui" type="button" aria-pressed="false">Hide UI</button>
       </nav>
       <p id="runtime-status" class="runtime-status" role="status" aria-live="polite">Checking for a published scene…</p>
+      <input id="image-file-input" type="file" accept="image/*" hidden />
     </main>
-    <script type="module" src="./src/mobile-viewer.js"></script>
+
+    <dialog id="details-dialog" class="details-sheet" aria-labelledby="details-title">
+      <form method="dialog" class="details-layout">
+        <header class="details-header">
+          <div>
+            <p class="dialog-kicker">Viewer setup</p>
+            <h2 id="details-title">Details</h2>
+          </div>
+          <button class="details-close" value="close" aria-label="Close details">Close</button>
+        </header>
+
+        <section class="details-section" aria-labelledby="source-details-title">
+          <h3 id="source-details-title">Source</h3>
+          <p>Current vertical FOV <output id="source-fov-output">—</output></p>
+          <p>Source lens <output id="source-lens-output">—</output></p>
+          <label for="source-lens-35mm">Lens (35 mm equivalent)</label>
+          <div class="calibration-action">
+            <input id="source-lens-35mm" type="number" min="10" max="800" step="0.1" inputmode="decimal" />
+            <button id="rebuild-source-lens" type="button" disabled>Rebuild depth</button>
+          </div>
+          <output id="source-lens-status" class="measurement-output">Paste or choose an image to rebuild its depth.</output>
+          <p class="details-note">Source exact uses the capture lens and keeps its camera apex at the calibrated eye; no display-side target lens is applied.</p>
+          <div class="details-actions">
+            <button id="choose-image" type="button">Choose image</button>
+            <button id="reload-scene" type="button">Reload published scene</button>
+          </div>
+        </section>
+
+        <section class="details-section" aria-labelledby="physical-details-title">
+          <h3 id="physical-details-title">Physical calibration</h3>
+          <p>Window framing <output id="window-framing-output">1.00× · auto fit</output> · pinch in True Window</p>
+          <p class="details-note">Initial view and Reset fit the complete source frame. This may use a wider overview aperture below 1.00×; 1.00× is the literal glass. Framing never moves or reshapes the metric mesh or source camera.</p>
+          <label for="panel-long-side-mm">Illuminated panel long side (mm)</label>
+          <div class="calibration-action">
+            <input id="panel-long-side-mm" type="number" min="50" max="500" step="0.1" inputmode="decimal" />
+            <button id="calibrate-screen" type="button">Use size</button>
+          </div>
+          <output id="screen-calibration-output" class="measurement-output">Screen estimate active</output>
+          <label for="actual-eye-distance-mm">Actual eye-to-glass distance (mm)</label>
+          <div class="calibration-action">
+            <input id="actual-eye-distance-mm" type="number" min="100" max="1500" step="1" inputmode="decimal" />
+            <button id="calibrate-eye-distance" type="button">Calibrate</button>
+          </div>
+          <output id="eye-distance-output" class="measurement-output">Reported — · corrected —</output>
+          <label for="debug-distance">Fallback viewing distance <output id="debug-distance-value">350</output> mm</label>
+          <input id="debug-distance" type="range" min="150" max="900" step="10" value="350" />
+        </section>
+
+        <section id="debug-controls" class="details-section relief-controls" aria-labelledby="relief-details-title">
+          <h3 id="relief-details-title">Photo relief</h3>
+          <label for="debug-span">Relief depth <output id="debug-span-value">1.00</output></label>
+          <input id="debug-span" type="range" min="0.05" max="40.0" step="0.05" value="1" />
+          <label for="debug-blend">Disparity blend <output id="debug-blend-value">1.00</output></label>
+          <input id="debug-blend" type="range" min="0" max="1" step="0.05" value="1" />
+          <label class="check-row"><input id="debug-anchor" type="checkbox" checked /> Anchor visible front to glass</label>
+          <label class="check-row"><input id="debug-refit" type="checkbox" checked /> Refit depth to zoomed region</label>
+          <label class="check-row"><input id="debug-level" type="checkbox" checked /> Hold level</label>
+        </section>
+
+        <section class="details-section" aria-labelledby="runtime-details-title">
+          <h3 id="runtime-details-title">Runtime</h3>
+          <output id="runtime-diagnostics" class="measurement-output">Tracking and performance readings appear after Start 3D.</output>
+          <button id="stop-tracking" type="button" disabled>Stop camera</button>
+        </section>
+      </form>
+    </dialog>
+    <dialog id="fov-dialog" class="blocking-dialog" aria-labelledby="fov-title">
+      <form id="fov-form" method="dialog">
+        <p class="dialog-kicker">Lens information needed</p>
+        <h2 id="fov-title">Vertical field of view</h2>
+        <p>This image has no capture-lens metadata. Confirm an assumed vertical FOV before the metric mesh is built.</p>
+        <label for="fov-input">Vertical FOV in degrees</label>
+        <input id="fov-input" type="number" min="15" max="120" step="0.1" value="32" inputmode="decimal" required />
+        <p id="fov-error" class="dialog-error" role="alert"></p>
+        <div class="dialog-actions">
+          <button id="cancel-fov" type="button">Cancel</button>
+          <button type="submit">Build mesh</button>
+        </div>
+      </form>
+    </dialog>
+    <script type="module" src="./src/mobile-viewer.js?v=20260829-m23"></script>
   </body>
 </html>

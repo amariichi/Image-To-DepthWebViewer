@@ -6,6 +6,7 @@ import {
   computeMobileModelPlacement,
   computeOffAxisProjection,
   computeVirtualScreen,
+  frameVirtualScreen,
   keepModelBehindEye,
   sanitizeEye,
   transformBounds,
@@ -106,6 +107,44 @@ test('virtual screen keeps height 2 and derives width from viewport aspect', () 
     halfWidth: 1.5,
     halfHeight: 1,
   });
+});
+
+
+test('overview framing expands only the virtual aperture and preserves its aspect', () => {
+  const physical = computeVirtualScreen(0.5);
+  const literal = frameVirtualScreen(physical, 1);
+  const overview = frameVirtualScreen(physical, 0.25);
+  assert.equal(literal.halfWidth, physical.halfWidth);
+  assert.equal(literal.halfHeight, physical.halfHeight);
+  assert.equal(overview.halfWidth, physical.halfWidth * 4);
+  assert.equal(overview.halfHeight, physical.halfHeight * 4);
+  assert.equal(overview.width / overview.height, physical.width / physical.height);
+  assert.equal(overview.physicalHalfWidth, physical.halfWidth);
+  assert.equal(overview.physicalHalfHeight, physical.halfHeight);
+  assert.throws(() => frameVirtualScreen(physical, 0), /must be positive/);
+});
+
+
+test('overview framing shows more without moving the eye or model point', () => {
+  const eye = { x: 0, y: 0, z: 5 };
+  const physical = computeVirtualScreen(0.5);
+  const overview = frameVirtualScreen(physical, 0.25);
+  const projectedX = (screen) => {
+    const projection = computeOffAxisProjection({
+      eye,
+      screenHalfWidth: screen.halfWidth,
+      screenHalfHeight: screen.halfHeight,
+      near: 0.05,
+      far: 20,
+    }).projectionMatrix;
+    const matrix = mat4.multiply(projection, computeEyeViewMatrix(eye));
+    const point = [1, 0, -2];
+    const clipX = matrix[0] * point[0] + matrix[8] * point[2] + matrix[12];
+    const clipW = matrix[3] * point[0] + matrix[11] * point[2] + matrix[15];
+    return clipX / clipW;
+  };
+  assert.ok(Math.abs(projectedX(overview) - projectedX(physical) * 0.25) < 1e-6);
+  assert.deepEqual(eye, { x: 0, y: 0, z: 5 });
 });
 
 

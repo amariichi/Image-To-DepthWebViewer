@@ -343,3 +343,113 @@ class BackendOriginTest(unittest.TestCase):
             self.assertEqual(default_backend_origin(), "http://elsewhere:9000")
         finally:
             os.environ.pop("RGBDE_BACKEND_ORIGIN", None)
+
+
+class MobileSourceSlotTest(unittest.TestCase):
+    """The depth generated for the phone is kept here for the editor.
+
+    Inference runs on this machine, so the RGBDE already passes through this
+    host on its way out. Keeping a copy lets the editor open the same scene
+    without the phone uploading bytes this machine produced, which is what a
+    metered connection would otherwise be charged for twice.
+    """
+
+    PNG = b"\x89PNG\r\n\x1a\n" + b"rgbde-payload"
+
+    def _client(self, handler, **kwargs):
+        app = create_app(WEBAPP_DIR, backend_origin="http://backend.test:8000", **kwargs)
+        app.state.backend_transport = httpx.MockTransport(handler)
+        return TestClient(app)
+
+    def _png_handler(self, filename: str = "pasted_RGBDE.png"):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                content=self.PNG,
+                headers={"Content-Type": "image/png", "X-RGBDE-Filename": filename},
+            )
+        return handler
+
+    def test_nothing_is_offered_before_the_phone_has_asked(self) -> None:
+        with self._client(self._png_handler()) as client:
+            status = client.get("/viewer-api/mobile-source")
+            self.assertEqual(status.json(), {"available": False, "revision": 0})
+            self.assertEqual(client.get("/viewer-api/mobile-source/image").status_code, 404)
+
+    def test_a_marked_request_leaves_its_result_for_the_editor(self) -> None:
+        with self._client(self._png_handler()) as client:
+            forwarded = client.post(
+                "/api/process?focal_length_35mm=50",
+                files={"image": ("photo.jpg", b"jpeg-bytes", "image/jpeg")},
+                headers={"X-RGBDE-Origin": "mobile"},
+            )
+            self.assertEqual(forwarded.status_code, 200)
+            # The phone still receives its own answer unchanged.
+            self.assertEqual(forwarded.content, self.PNG)
+
+            status = client.get("/viewer-api/mobile-source").json()
+            self.assertTrue(status["available"])
+            self.assertEqual(status["revision"], 1)
+            self.assertEqual(status["filename"], "pasted_RGBDE.png")
+            self.assertEqual(status["focalLength35mm"], 50.0)
+            self.assertEqual(status["byteLength"], len(self.PNG))
+
+            image = client.get("/viewer-api/mobile-source/image")
+            self.assertEqual(image.status_code, 200)
+            self.assertEqual(image.content, self.PNG)
+            self.assertEqual(image.headers["content-type"], "image/png")
+
+    def test_the_editors_own_generation_is_not_offered_back_to_it(self) -> None:
+        # The editor posts to the same endpoint through the same proxy. Without
+        # the marker it would be handed back whatever it had just made itself.
+        with self._client(self._png_handler()) as client:
+            client.post(
+                "/api/process",
+                files={"image": ("photo.jpg", b"jpeg-bytes", "image/jpeg")},
+            )
+            self.assertFalse(client.get("/viewer-api/mobile-source").json()["available"])
+
+    def test_a_failed_or_non_image_answer_is_not_kept(self) -> None:
+        def failing(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(500, json={"detail": "inference failed"})
+
+        with self._client(failing) as client:
+            client.post(
+                "/api/process",
+                files={"image": ("photo.jpg", b"jpeg-bytes", "image/jpeg")},
+                headers={"X-RGBDE-Origin": "mobile"},
+            )
+            self.assertFalse(client.get("/viewer-api/mobile-source").json()["available"])
+
+    def test_the_newest_generation_replaces_the_previous_one(self) -> None:
+        with self._client(self._png_handler("first_RGBDE.png")) as client:
+            client.post(
+                "/api/process",
+                files={"image": ("a.jpg", b"a", "image/jpeg")},
+                headers={"X-RGBDE-Origin": "mobile"},
+            )
+            first = client.get("/viewer-api/mobile-source").json()
+
+        with self._client(self._png_handler("second_RGBDE.png")) as client:
+            for _ in range(2):
+                client.post(
+                    "/api/process",
+                    files={"image": ("b.jpg", b"b", "image/jpeg")},
+                    headers={"X-RGBDE-Origin": "mobile"},
+                )
+            second = client.get("/viewer-api/mobile-source").json()
+
+        self.assertEqual(first["filename"], "first_RGBDE.png")
+        self.assertEqual(second["filename"], "second_RGBDE.png")
+        self.assertEqual(second["revision"], 2)
+
+    def test_the_slot_can_be_emptied(self) -> None:
+        with self._client(self._png_handler()) as client:
+            client.post(
+                "/api/process",
+                files={"image": ("photo.jpg", b"jpeg-bytes", "image/jpeg")},
+                headers={"X-RGBDE-Origin": "mobile"},
+            )
+            self.assertTrue(client.get("/viewer-api/mobile-source").json()["available"])
+            self.assertEqual(client.delete("/viewer-api/mobile-source").json(), {"cleared": True})
+            self.assertFalse(client.get("/viewer-api/mobile-source").json()["available"])

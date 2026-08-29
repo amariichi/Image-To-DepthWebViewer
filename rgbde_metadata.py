@@ -10,6 +10,34 @@ from typing import Any
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 DEPTH_METADATA_KEYWORD = "LookingGlassGoDepthMetadata"
+MIN_FOCAL_LENGTH_35MM = 10.0
+MAX_FOCAL_LENGTH_35MM = 800.0
+FULL_FRAME_DIAGONAL_MM = math.hypot(36.0, 24.0)
+
+
+def validate_focal_length_35mm(value: Any) -> float | None:
+    """Return a usable 35 mm-equivalent focal length or reject the request."""
+
+    if value is None:
+        return None
+    try:
+        focal = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Focal length must be from 10 to 800 mm (35 mm equivalent).") from exc
+    if not math.isfinite(focal) or not MIN_FOCAL_LENGTH_35MM <= focal <= MAX_FOCAL_LENGTH_35MM:
+        raise ValueError("Focal length must be from 10 to 800 mm (35 mm equivalent).")
+    return focal
+
+
+def focal_length_pixels_from_35mm(width: int, height: int, focal_length_35mm: Any) -> float:
+    """Convert a 35 mm-equivalent lens to pixels using the image diagonal."""
+
+    if not isinstance(width, int) or not isinstance(height, int) or width < 1 or height < 1:
+        raise ValueError("Image dimensions must be positive integers.")
+    focal = validate_focal_length_35mm(focal_length_35mm)
+    if focal is None:
+        raise ValueError("A focal length is required for conversion.")
+    return focal * math.hypot(width, height) / FULL_FRAME_DIAGONAL_MM
 
 
 def tensor_to_float(value: Any) -> float | None:
