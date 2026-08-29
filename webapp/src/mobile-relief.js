@@ -143,6 +143,7 @@ export function createMobileReliefScene({
   screenWidth,
   screenHeight,
   baselineEyeZ,
+  captureFovDeg = null,
   depthSpan = 1,
   frontZ = 0,
   occupancy = 0.92,
@@ -165,6 +166,16 @@ export function createMobileReliefScene({
   finitePositive(depthSpan, 'depthSpan');
   const safeFrontZ = Math.min(Number.isFinite(frontZ) ? frontZ : 0, 0);
   const imageRect = fitImageRect(sourceAspect, screenWidth, screenHeight, occupancy);
+  const captureTangent = Number.isFinite(captureFovDeg)
+    && captureFovDeg > 0 && captureFovDeg < 180
+    ? Math.tan((captureFovDeg * Math.PI) / 360)
+    : null;
+  // Photo mode follows StereoSplatViewer: build the miniature around the
+  // source-camera apex, then map the physically tracked eye into that same
+  // coordinate system. The fallback preserves legacy callers with no lens.
+  const captureApex = captureTangent
+    ? (imageRect.height / 2) / captureTangent
+    : baselineEyeZ;
   // Depth is a proportion of the picture, not a fixed distance behind the glass.
   // How deep something looks is judged against how large it appears, and the
   // fitted picture changes size with both the screen's orientation and the
@@ -198,7 +209,7 @@ export function createMobileReliefScene({
     // Every vertex is placed on the ray from the calibrated baseline eye through
     // its own image-plane anchor. Projecting from that eye therefore reproduces
     // the source image exactly, whatever depth span or mapping is chosen.
-    const rayScale = (baselineEyeZ - z) / baselineEyeZ;
+    const rayScale = (captureApex - z) / captureApex;
     const worldX = screenX * rayScale;
     const worldY = screenY * rayScale;
     reliefPositions[positionOffset] = worldX;
@@ -256,6 +267,7 @@ export function createMobileReliefScene({
     depthRangeIsFitted,
     disparityBlend: clamp(disparityBlend, 0, 1),
     imageRect,
+    captureApex,
     sourceDepth,
   };
 }
@@ -295,7 +307,7 @@ export function estimateUniformScaleDepthSpan({
 // There is no separate depth limit. One existed and did nothing but harm: its
 // only possible action was to introduce that inconsistency, and it engaged so
 // early that the relief depth slider stopped deepening anything past about 1.15.
-// The bounds that matter are already elsewhere -- touch scale spans 0.45 to 3,
+// The bounds that matter are already elsewhere -- touch scale spans 0.2 to 3,
 // and the relief span is bounded where it is authored.
 export function createReliefInteractionMatrix({ interaction, frontZ = 0 }) {
   const panX = Number(interaction?.panX) || 0;
@@ -312,6 +324,22 @@ export function createReliefInteractionMatrix({ interaction, frontZ = 0 }) {
   matrix = mat4.rotateX(matrix, pitch);
   matrix = mat4.scale(matrix, scale);
   matrix = mat4.translate(matrix, [0, 0, -frontZ]);
+  return matrix;
+}
+
+// True Window keeps pinch framing in the projection aperture, so only the
+// turntable and pan belong here. Match StereoSplatViewer's parent order: read
+// right to left, spin about room-up first and tip the resulting turntable
+// second. Reversing these two makes a tipped, already-spun model orbit around a
+// sideways axis when device attitude is composed underneath it.
+export function createTrueWindowInteractionMatrix({ interaction }) {
+  const panX = Number(interaction?.panX) || 0;
+  const panY = Number(interaction?.panY) || 0;
+  const yaw = Number(interaction?.yaw) || 0;
+  const pitch = Number(interaction?.pitch) || 0;
+  let matrix = mat4.translate(mat4.identity(), [panX, panY, 0]);
+  matrix = mat4.rotateX(matrix, pitch);
+  matrix = mat4.rotateY(matrix, yaw);
   return matrix;
 }
 

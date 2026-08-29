@@ -29,6 +29,19 @@ const generateButton = document.getElementById('generate-depth');
 const saveButton = document.getElementById('save-rgbde');
 const saveGltfButton = document.getElementById('save-gltf');
 const publishMobileButton = document.getElementById('publish-mobile');
+const openMobileImageButton = document.getElementById('open-mobile-image');
+// What the host is holding for the editor, or null. Refreshed rather than
+// polled: the moment that matters is coming back to this machine.
+let mobileSourceStatus = null;
+// The revision already open here. Opening resets depth shaping, FOV and
+// placement with no undo, so re-opening the identical image can only cost
+// work; the button offers itself again only once the phone has made something
+// new. Zero is never a real revision, so nothing is open to begin with.
+let openedMobileRevision = 0;
+// The phone polls this host for a published scene every three seconds; this is
+// the same exchange in the other direction, so it keeps the same interval.
+const MOBILE_SOURCE_POLL_MS = 3000;
+let mobileSourcePollTimer = null;
 const canvas = document.getElementById('glCanvas');
 const toggleButton = document.getElementById('toggle-ui');
 const mirrorToggleButton = document.getElementById('toggle-ui-mirror');
@@ -695,6 +708,112 @@ async function publishCurrentMeshToMobile() {
   }
 }
 
+/**
+ * Open the depth image this machine last generated for the phone.
+ *
+ * Nothing travels from the phone. Inference already runs here, so the RGBDE
+ * passed through this host on its way out and a copy was kept; the phone never
+ * uploads bytes this machine produced, which matters on a metered connection.
+ *
+ * It is a pull rather than a push on purpose: a scene being worked on here is
+ * never replaced because someone picked up the phone.
+ */
+function describeMobileSource(status) {
+  if (!status) return null;
+  const when = Number.isFinite(status.createdAt)
+    ? new Date(status.createdAt * 1000).toLocaleTimeString()
+    : null;
+  const lens = Number.isFinite(status.focalLength35mm)
+    ? `${Math.round(status.focalLength35mm)} mm`
+    : null;
+  return [status.filename, lens, when].filter(Boolean).join(' · ');
+}
+
+async function readMobileSourceStatus() {
+  try {
+    const response = await fetch('/viewer-api/mobile-source', { cache: 'no-store' });
+    if (!response.ok) return null;
+    const payload = await response.json();
+    return payload && payload.available ? payload : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Watch for something new only while there is nothing to offer.
+ *
+ * A disabled button is the state where a change would go unseen: the phone can
+ * produce a scene at any moment and nothing here would say so. Once the button
+ * is offering one it has already said everything it can, and what is finally
+ * opened is re-read at that moment anyway, so watching past that point buys
+ * nothing. A hidden tab is not watched either.
+ */
+function updateMobileSourceWatch() {
+  const shouldWatch = Boolean(openMobileImageButton)
+    && openMobileImageButton.disabled
+    && !document.hidden;
+  if (shouldWatch && mobileSourcePollTimer === null) {
+    mobileSourcePollTimer = window.setInterval(() => {
+      void refreshMobileSourceButton();
+    }, MOBILE_SOURCE_POLL_MS);
+  } else if (!shouldWatch && mobileSourcePollTimer !== null) {
+    window.clearInterval(mobileSourcePollTimer);
+    mobileSourcePollTimer = null;
+  }
+}
+
+async function refreshMobileSourceButton() {
+  if (!openMobileImageButton) return;
+  mobileSourceStatus = await readMobileSourceStatus();
+  const isNew = Boolean(mobileSourceStatus)
+    && mobileSourceStatus.revision !== openedMobileRevision;
+  openMobileImageButton.disabled = !isNew;
+  if (!mobileSourceStatus) {
+    openMobileImageButton.title = 'Nothing has been generated for the phone yet.';
+  } else if (isNew) {
+    openMobileImageButton.title =
+      `Open the depth image last generated for the phone (${describeMobileSource(mobileSourceStatus)})`;
+  } else {
+    openMobileImageButton.title =
+      `Already open here (${describeMobileSource(mobileSourceStatus)}). `
+      + 'Generate another on the phone to bring one across.';
+  }
+  updateMobileSourceWatch();
+}
+
+async function openMobileImage() {
+  const restore = openMobileImageButton ? openMobileImageButton.disabled : null;
+  if (openMobileImageButton) openMobileImageButton.disabled = true;
+  try {
+    // Read the status again first, so the name and lens reported are the ones
+    // actually about to be opened rather than whatever was there on arrival.
+    const status = await readMobileSourceStatus();
+    if (!status) {
+      showStatus('Nothing has been generated for the phone yet.', 4000);
+      return;
+    }
+    showStatus('Opening the phone\u2019s depth image…', 0);
+    const response = await fetch('/viewer-api/mobile-source/image', { cache: 'no-store' });
+    if (!response.ok) throw new Error(`The host answered ${response.status}.`);
+    const blob = await response.blob();
+    if (blob.size === 0) throw new Error('The stored image is empty.');
+    const file = new File([blob], status.filename || 'mobile_RGBDE.png', { type: 'image/png' });
+    const loaded = await handleFiles(file, { sourceType: 'generated' });
+    if (loaded) openedMobileRevision = status.revision;
+    showStatus(
+      loaded ? `Opened ${describeMobileSource(status)}` : 'That image could not be read.',
+      loaded ? 4000 : 5000,
+    );
+  } catch (error) {
+    console.error(error);
+    showStatus(error && error.message ? error.message : 'Could not open the phone image.', 5000);
+  } finally {
+    if (openMobileImageButton && restore !== null) openMobileImageButton.disabled = restore;
+    void refreshMobileSourceButton();
+  }
+}
+
 function setProcessing(isProcessing) {
   state.processing = isProcessing;
   generateButton.disabled = Boolean(isProcessing);
@@ -928,6 +1047,23 @@ function attachUIListeners() {
     publishMobileButton.addEventListener('click', () => {
       void publishCurrentMeshToMobile();
     });
+  }
+  if (openMobileImageButton) {
+    openMobileImageButton.addEventListener('click', () => {
+      void openMobileImage();
+    });
+    // The moment worth re-checking is coming back to this machine after using
+    // the phone, so listen for that instead of polling a local endpoint.
+    window.addEventListener('focus', () => {
+      void refreshMobileSourceButton();
+    });
+    // A background tab is not worth polling, and coming back to one is worth
+    // checking immediately rather than waiting out an interval.
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) updateMobileSourceWatch();
+      else void refreshMobileSourceButton();
+    });
+    void refreshMobileSourceButton();
   }
   toggleButton.addEventListener('click', () => {
     setUiHidden(!state.uiHidden);

@@ -9,7 +9,9 @@ import zlib
 from rgbde_metadata import (
     DEPTH_METADATA_KEYWORD,
     embed_depth_metadata_in_png_bytes,
+    focal_length_pixels_from_35mm,
     make_depth_metadata,
+    validate_focal_length_35mm,
 )
 
 
@@ -50,6 +52,21 @@ def parse_itxt(data: bytes) -> tuple[str, dict]:
 
 
 class RgbdeMetadataTest(unittest.TestCase):
+    def test_35mm_equivalent_conversion_uses_the_image_diagonal(self) -> None:
+        landscape = focal_length_pixels_from_35mm(400, 300, 50)
+        portrait = focal_length_pixels_from_35mm(300, 400, 50)
+
+        self.assertAlmostEqual(landscape, portrait)
+        self.assertAlmostEqual(landscape, 50 * 500 / math.hypot(36, 24))
+
+    def test_35mm_equivalent_validation_has_a_bounded_user_range(self) -> None:
+        self.assertIsNone(validate_focal_length_35mm(None))
+        self.assertEqual(validate_focal_length_35mm("28"), 28.0)
+        for value in (0, 9.9, 800.1, math.inf, "wide"):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "10 to 800"):
+                    validate_focal_length_35mm(value)
+
     def test_make_depth_metadata_adds_fov_from_prediction_focal_length(self) -> None:
         metadata = make_depth_metadata("source.png", 400, 200, 500.0, 1000.0)
 

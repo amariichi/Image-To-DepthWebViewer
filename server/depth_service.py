@@ -15,8 +15,10 @@ from PIL import Image
 
 from rgbde_metadata import (
     embed_depth_metadata_in_png_bytes,
+    focal_length_pixels_from_35mm,
     make_depth_metadata,
     tensor_to_float,
+    validate_focal_length_35mm,
 )
 
 # Ensure the Depth Pro submodule is importable before pulling in torch/depth_pro.
@@ -95,23 +97,55 @@ class DepthProService:
     def device_label(self) -> str:
         return str(self.device)
 
-    async def generate_rgbde(self, data: bytes, original_name: str) -> DepthResult:
-        return await asyncio.to_thread(self._generate_rgbde_sync, data, original_name)
+    async def generate_rgbde(
+        self,
+        data: bytes,
+        original_name: str,
+        *,
+        focal_length_35mm: float | None = None,
+    ) -> DepthResult:
+        return await asyncio.to_thread(
+            self._generate_rgbde_sync,
+            data,
+            original_name,
+            focal_length_35mm,
+        )
 
-    def _generate_rgbde_sync(self, data: bytes, original_name: str) -> DepthResult:
+    def _generate_rgbde_sync(
+        self,
+        data: bytes,
+        original_name: str,
+        focal_length_35mm: float | None = None,
+    ) -> DepthResult:
         suffix = Path(original_name).suffix.lower()
         if suffix not in {".jpg", ".jpeg", ".png"}:
             raise ValueError("Only JPG and PNG inputs are supported.")
+        focal_override = validate_focal_length_35mm(focal_length_35mm)
 
         with TemporaryDirectory(prefix="rgbde_") as temp_dir:
             input_path = Path(temp_dir) / f"source{suffix if suffix else '.png'}"
             input_path.write_bytes(data)
 
             image_data, _, focal_px = depth_pro.load_rgb(str(input_path))
+            if focal_override is not None:
+                focal_px = focal_length_pixels_from_35mm(
+                    int(image_data.shape[1]),
+                    int(image_data.shape[0]),
+                    focal_override,
+                )
+            # Depth Pro calls `.squeeze()` on a supplied focal value. Its EXIF
+            # helper happens to return a NumPy scalar with that method, while
+            # the explicit 35 mm conversion returns a plain Python float.
+            # Normalize both to the model's tensor/device contract.
+            inference_focal_px = None if focal_px is None else torch.as_tensor(
+                focal_px,
+                dtype=torch.float32,
+                device=self.device,
+            )
             tensor = self.transform(image_data).unsqueeze(0).to(self.device)
 
             with torch.no_grad():
-                prediction = self.model.infer(tensor, f_px=focal_px)
+                prediction = self.model.infer(tensor, f_px=inference_focal_px)
 
             depth = prediction["depth"].squeeze().cpu().numpy()
             prediction_focal_length_px = tensor_to_float(prediction.get("focallength_px"))
@@ -134,7 +168,7 @@ class DepthProService:
                 original_name,
                 depth.shape[1],
                 depth.shape[0],
-                tensor_to_float(focal_px),
+                tensor_to_float(inference_focal_px),
                 prediction_focal_length_px,
             )
             png_bytes = embed_depth_metadata_in_png_bytes(buffer.getvalue(), metadata)

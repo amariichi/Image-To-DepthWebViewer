@@ -21,6 +21,30 @@ export function computeVirtualScreen(aspect, screenHeight = 2) {
   };
 }
 
+// True Window is literal at framingScale=1. Below one, the projection looks
+// through a proportionally larger virtual pane so a user can inspect the full
+// source frame on a small or differently shaped phone. This changes only the
+// frustum; the physical eye, natural reference camera, metric model matrix and
+// triangle boundaries do not move. It is therefore an explicit overview aid,
+// not a claim that the virtual pane is still the physical glass.
+export function frameVirtualScreen(screen, framingScale = 1) {
+  const halfWidth = finiteNumber(screen?.halfWidth, 'screen.halfWidth');
+  const halfHeight = finiteNumber(screen?.halfHeight, 'screen.halfHeight');
+  finiteNumber(framingScale, 'framingScale');
+  if (!(halfWidth > 0) || !(halfHeight > 0) || !(framingScale > 0)) {
+    throw new Error('Framed virtual screen dimensions and scale must be positive.');
+  }
+  return {
+    width: (halfWidth * 2) / framingScale,
+    height: (halfHeight * 2) / framingScale,
+    halfWidth: halfWidth / framingScale,
+    halfHeight: halfHeight / framingScale,
+    physicalHalfWidth: halfWidth,
+    physicalHalfHeight: halfHeight,
+    framingScale,
+  };
+}
+
 // Eye distance is now a measured quantity in world units, where one unit is
 // half the physical screen height. Holding a phone at arm's length is already
 // past 10 units, so the ceiling has to clear the range the metric tracker can

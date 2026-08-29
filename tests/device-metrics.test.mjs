@@ -7,6 +7,8 @@ import {
   computeViewingGeometry,
   findKnownDevice,
   loadStoredNumber,
+  mmPerCssPxFromPanelLongSide,
+  preservePhysicalPoint,
   resolveScreenMetrics,
   saveStoredNumber,
 } from '../webapp/src/device-metrics.js';
@@ -68,6 +70,27 @@ test('an explicitly measured screen size beats both the table and the estimate',
 });
 
 
+test('a measured panel long side converts to an orientation-independent CSS scale', () => {
+  const portrait = mmPerCssPxFromPanelLongSide({
+    panelLongSideMm: 150,
+    screenWidth: 400,
+    screenHeight: 900,
+  });
+  const landscape = mmPerCssPxFromPanelLongSide({
+    panelLongSideMm: 150,
+    screenWidth: 900,
+    screenHeight: 400,
+  });
+  assert.equal(portrait, 1 / 6);
+  assert.equal(landscape, portrait);
+  assert.throws(() => mmPerCssPxFromPanelLongSide({
+    panelLongSideMm: 0,
+    screenWidth: 400,
+    screenHeight: 900,
+  }));
+});
+
+
 test('viewing geometry puts the eye about two screen heights away on real devices', () => {
   // The previous build used a fixed eye distance of 2.5 world units against a
   // virtual screen two units tall, which is 1.25 screen heights. A phone or
@@ -106,6 +129,18 @@ test('viewing distance is clamped and bad geometry inputs are rejected', () => {
   assert.equal(fallback.viewingDistanceMm, DEFAULT_VIEWING_DISTANCE_MM);
   assert.throws(() => computeViewingGeometry({ canvasCssHeight: 0, mmPerCssPx: 0.16 }));
   assert.throws(() => computeViewingGeometry({ canvasCssHeight: 800, mmPerCssPx: 0 }));
+});
+
+
+test('viewport changes preserve the eye at the same physical millimetre point', () => {
+  const before = { x: 0.5, y: -0.25, z: 5, confidence: 0.8 };
+  const after = preservePhysicalPoint(before, 60, 90);
+  assert.ok(Math.abs(after.x - 1 / 3) < 1e-12);
+  assert.ok(Math.abs(after.y + 1 / 6) < 1e-12);
+  assert.ok(Math.abs(after.z - 10 / 3) < 1e-12);
+  assert.equal(after.confidence, 0.8);
+  assert.ok(Math.abs(after.z * 90 - before.z * 60) < 1e-9);
+  assert.throws(() => preservePhysicalPoint(before, 0, 90));
 });
 
 

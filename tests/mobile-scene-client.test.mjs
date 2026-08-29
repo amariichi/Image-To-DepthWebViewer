@@ -4,11 +4,26 @@ import test from 'node:test';
 import {
   MOBILE_PRESENTATION_DEFAULTS,
   createMobileSceneManifest,
+  fetchPublishedSceneManifest,
   fetchPublishedScenePair,
   MAX_MOBILE_DEPTH_SPAN,
   mobileDepthSpanForMagnification,
   publishMobileScene,
 } from '../webapp/src/mobile-scene-client.js';
+
+
+test('fetches a manifest without downloading the published model', async () => {
+  const calls = [];
+  const envelope = await fetchPublishedSceneManifest({
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return new Response(JSON.stringify({ available: true, revision: 3, manifest: {} }));
+    },
+  });
+  assert.equal(envelope.revision, 3);
+  assert.deepEqual(calls.map((call) => call.url), ['/viewer-api/scene/manifest']);
+  assert.equal(calls[0].options.cache, 'no-store');
+});
 
 
 test('creates a presentation-only schema v1 mobile manifest', () => {

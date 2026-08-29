@@ -1,4 +1,5 @@
 import { MAX_SUPPORTED_EYE_Z } from './head-coupled-projection.js';
+import { clampDistanceScale } from './head-distance-calibration.js';
 
 export const MEDIAPIPE_TASKS_VERSION = '1.0.0';
 export const MEDIAPIPE_MODULE_URL = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MEDIAPIPE_TASKS_VERSION}/vision_bundle.mjs`;
@@ -27,6 +28,16 @@ export const DEFAULT_Z_GAIN = 0.1;
 // MediaPipe reports the facial transformation matrix in centimetres, in a
 // camera space whose origin is the camera itself.
 const MM_PER_CM = 10;
+
+// Mean of canonical face landmarks 33, 133, 362 and 263 (the inner and outer
+// corners of both eyes), in the canonical model's centimetres. MediaPipe's
+// facial matrix transforms this model into camera space. Its translation alone
+// is the model origin around the middle of the face, not the viewer's eye.
+export const CANONICAL_CYCLOPEAN_EYE_CM = Object.freeze({
+  x: 0,
+  y: 2.624618,
+  z: 3.465663,
+});
 
 function finitePoint(point) {
   return point && Number.isFinite(point.x) && Number.isFinite(point.y);
@@ -181,20 +192,27 @@ export function mapObservationToEyePose(observation, calibration, {
 }
 
 // MediaPipe's facial transformation matrix is a column-major 4x4 that maps the
-// canonical face model into camera space. Its translation column is the head
-// position in centimetres: +x to the camera's right, +y up, and -z away from
-// the camera. Reading it directly removes the guessed gains entirely.
-export function extractMetricHeadTranslation(matrixData) {
+// canonical face model into camera space. Transforming the canonical eye point
+// with the full matrix accounts for both its offset from the model origin and
+// the way that offset rotates with the face.
+export function extractMetricEyePosition(matrixData) {
   const data = matrixData?.data ?? matrixData;
   if (!data || data.length !== 16) return null;
-  const x = Number(data[12]);
-  const y = Number(data[13]);
-  const z = Number(data[14]);
+  const point = CANONICAL_CYCLOPEAN_EYE_CM;
+  const x = Number(data[0]) * point.x + Number(data[4]) * point.y
+    + Number(data[8]) * point.z + Number(data[12]);
+  const y = Number(data[1]) * point.x + Number(data[5]) * point.y
+    + Number(data[9]) * point.z + Number(data[13]);
+  const z = Number(data[2]) * point.x + Number(data[6]) * point.y
+    + Number(data[10]) * point.z + Number(data[14]);
   if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;
   const distanceMm = Math.abs(z) * MM_PER_CM;
   if (!(distanceMm > 1)) return null;
   return { xMm: x * MM_PER_CM, yMm: y * MM_PER_CM, distanceMm };
 }
+
+/** @deprecated Use `extractMetricEyePosition`; kept for compatible imports. */
+export const extractMetricHeadTranslation = extractMetricEyePosition;
 
 // Converts a metric head position into the virtual screen's world units.
 //
@@ -210,6 +228,7 @@ export function extractMetricHeadTranslation(matrixData) {
 // error.
 export function mapMetricPoseToEyePose(metric, calibration, {
   worldUnitMm,
+  distanceScale = 1,
   mirrorX = true,
   minX = -2.5,
   maxX = 2.5,
@@ -225,23 +244,28 @@ export function mapMetricPoseToEyePose(metric, calibration, {
     throw new Error('worldUnitMm must be positive to convert metric head motion.');
   }
   const clampValue = (value, min, max) => Math.min(Math.max(value, min), max);
+  const metricScale = clampDistanceScale(distanceScale);
   const centerX = Number(calibration?.metric?.xMm) || 0;
   const centerY = Number(calibration?.metric?.yMm) || 0;
   const horizontalDirection = mirrorX ? -1 : 1;
   const x = clampValue(
-    ((metric.xMm - centerX) * horizontalDirection) / worldUnitMm,
+    ((metric.xMm - centerX) * horizontalDirection * metricScale) / worldUnitMm,
     minX,
     maxX,
   );
+  // MediaPipe's metric Y needs the opposite sign in the display-space eye
+  // frame. This is the hardware-verified convention used by StereoSplatViewer:
+  // without it, tipping the phone supplies an up/down eye cue opposite to the
+  // scene attitude and makes True Window appear to turn the wrong way.
   const y = clampValue(
-    (metric.yMm - centerY) / worldUnitMm,
+    -((metric.yMm - centerY) * metricScale) / worldUnitMm,
     minY,
     maxY,
   );
   return {
     x: x || 0,
     y: y || 0,
-    z: clampValue(metric.distanceMm / worldUnitMm, minZ, maxZ),
+    z: clampValue((metric.distanceMm * metricScale) / worldUnitMm, minZ, maxZ),
     confidence: 1,
     timestamp: 0,
   };
@@ -378,6 +402,7 @@ export class HeadTracker {
     video,
     baselineEyeZ = 4.5,
     worldUnitMm = null,
+    distanceScale = 1,
     mirrorX = true,
     xyGain = DEFAULT_XY_GAIN,
     mediaDevices = globalThis.navigator?.mediaDevices,
@@ -392,6 +417,7 @@ export class HeadTracker {
     this.video = video;
     this.baselineEyeZ = baselineEyeZ;
     this.worldUnitMm = Number.isFinite(worldUnitMm) && worldUnitMm > 0 ? worldUnitMm : null;
+    this.distanceScale = clampDistanceScale(distanceScale);
     this.mirrorX = Boolean(mirrorX);
     this.xyGain = Number.isFinite(xyGain) && xyGain > 0 ? xyGain : DEFAULT_XY_GAIN;
     this.mediaDevices = mediaDevices;
@@ -429,6 +455,7 @@ export class HeadTracker {
       inferenceTimestamps: [],
       metricAvailable: false,
       headDistanceMm: 0,
+      correctedHeadDistanceMm: 0,
       rawHeadXMm: 0,
       calibratedHeadXMm: 0,
       poseSource: 'none',
@@ -446,6 +473,7 @@ export class HeadTracker {
       inferenceDurationMs: this.metrics.inferenceDurationMs,
       metricAvailable: this.metrics.metricAvailable,
       headDistanceMm: this.metrics.headDistanceMm,
+      correctedHeadDistanceMm: this.metrics.correctedHeadDistanceMm,
       rawHeadXMm: this.metrics.rawHeadXMm,
       calibratedHeadXMm: this.metrics.calibratedHeadXMm,
       poseSource: this.metrics.poseSource,
@@ -453,8 +481,34 @@ export class HeadTracker {
   }
 
   setViewingGeometry({ worldUnitMm, baselineEyeZ }) {
-    if (Number.isFinite(worldUnitMm) && worldUnitMm > 0) this.worldUnitMm = worldUnitMm;
+    const previousWorldUnitMm = this.worldUnitMm;
+    if (Number.isFinite(worldUnitMm) && worldUnitMm > 0) {
+      this.worldUnitMm = worldUnitMm;
+    }
     if (Number.isFinite(baselineEyeZ) && baselineEyeZ > 0) this.baselineEyeZ = baselineEyeZ;
+    if (previousWorldUnitMm && this.worldUnitMm
+        && Math.abs(previousWorldUnitMm - this.worldUnitMm) > 1e-9) {
+      const factor = previousWorldUnitMm / this.worldUnitMm;
+      const current = this.filter.get();
+      if (current) {
+        const preserved = {
+          ...current,
+          x: current.x * factor,
+          y: current.y * factor,
+          z: current.z * factor,
+        };
+        this.filter.reset(preserved, preserved.timestamp);
+        this.onPose(preserved);
+      }
+      if (this.calibration?.baselineEyeZ) {
+        this.calibration.baselineEyeZ *= factor;
+      }
+    }
+  }
+
+  setDistanceScale(scale, { recenter = true } = {}) {
+    this.distanceScale = clampDistanceScale(scale);
+    if (recenter && this.running) this.recenter();
   }
 
   usesMetricPose() {
@@ -557,11 +611,12 @@ export class HeadTracker {
       this.handleLostFace(timestamp);
       return;
     }
-    const metric = extractMetricHeadTranslation(result?.facialTransformationMatrixes?.[0]);
+    const metric = extractMetricEyePosition(result?.facialTransformationMatrixes?.[0]);
     if (metric) {
       observation.metric = metric;
       this.metrics.metricAvailable = true;
       this.metrics.headDistanceMm = metric.distanceMm;
+      this.metrics.correctedHeadDistanceMm = metric.distanceMm * this.distanceScale;
       this.metrics.rawHeadXMm = metric.xMm;
       this.metrics.calibratedHeadXMm = metric.xMm - (Number(this.calibration?.metric?.xMm) || 0);
     }
@@ -588,6 +643,7 @@ export class HeadTracker {
         z: this.worldUnitMm && average.metric
           ? mapMetricPoseToEyePose(average.metric, this.calibration, {
             worldUnitMm: this.worldUnitMm,
+            distanceScale: this.distanceScale,
             mirrorX: this.mirrorX,
           }).z
           : this.baselineEyeZ,
@@ -607,6 +663,7 @@ export class HeadTracker {
     const pose = this.usesMetricPose() && observation.metric
       ? mapMetricPoseToEyePose(observation.metric, this.calibration, {
         worldUnitMm: this.worldUnitMm,
+        distanceScale: this.distanceScale,
         mirrorX: this.mirrorX,
       })
       : mapObservationToEyePose(observation, this.calibration, {
@@ -627,7 +684,7 @@ export class HeadTracker {
     }
     if (timestamp - this.lostSince <= LOST_FACE_GRACE_MS) return;
     const calibratedDistance = this.usesMetricPose() && this.calibration?.metric
-      ? this.calibration.metric.distanceMm / this.worldUnitMm
+      ? (this.calibration.metric.distanceMm * this.distanceScale) / this.worldUnitMm
       : this.baselineEyeZ;
     const centered = {
       x: 0,

@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import json
 import unittest
 from unittest.mock import patch
 
-from fastapi.testclient import TestClient
+from fastapi import HTTPException
 
-from server.main import app, ascii_safe_filename, build_download_headers
+from server.main import (
+    ascii_safe_filename,
+    build_download_headers,
+    process_image,
+    status,
+)
 
 
 class FilenameHelpersTest(unittest.TestCase):
@@ -33,39 +39,58 @@ class _FakeDepthResult:
 class _FakeDepthService:
     device_label = "cpu"
 
-    async def generate_rgbde(self, data: bytes, original_name: str) -> _FakeDepthResult:
-        self.last_call = (data, original_name)
+    async def generate_rgbde(
+        self,
+        data: bytes,
+        original_name: str,
+        *,
+        focal_length_35mm: float | None = None,
+    ) -> _FakeDepthResult:
+        self.last_call = (data, original_name, focal_length_35mm)
         return _FakeDepthResult(b"fake-png", "深度結果.png")
 
 
 class _FailingDepthService:
     device_label = "cpu"
 
-    async def generate_rgbde(self, data: bytes, original_name: str) -> _FakeDepthResult:
+    async def generate_rgbde(
+        self,
+        data: bytes,
+        original_name: str,
+        *,
+        focal_length_35mm: float | None = None,
+    ) -> _FakeDepthResult:
         raise ValueError("Only JPG and PNG inputs are supported.")
 
 
-class ApiRoutesTest(unittest.TestCase):
-    def test_status_endpoint_uses_lazy_service_lookup(self) -> None:
+class _FakeUpload:
+    def __init__(self, filename: str, content: bytes) -> None:
+        self.filename = filename
+        self.content = content
+
+    async def read(self) -> bytes:
+        return self.content
+
+
+class ApiRoutesTest(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def upload(name: str, content: bytes = b"raw-image") -> _FakeUpload:
+        return _FakeUpload(name, content)
+
+    async def test_status_endpoint_uses_lazy_service_lookup(self) -> None:
         fake_service = _FakeDepthService()
         with patch("server.main.get_depth_service", return_value=fake_service):
-            with TestClient(app) as client:
-                response = client.get("/api/status")
+            response = await status()
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"status": "ok", "device": "cpu"})
+        self.assertEqual(json.loads(response.body), {"status": "ok", "device": "cpu"})
 
-    def test_process_endpoint_returns_png_and_download_headers(self) -> None:
+    async def test_process_endpoint_returns_png_and_download_headers(self) -> None:
         fake_service = _FakeDepthService()
         with patch("server.main.get_depth_service", return_value=fake_service):
-            with TestClient(app) as client:
-                response = client.post(
-                    "/api/process",
-                    files={"image": ("example.png", b"raw-image", "image/png")},
-                )
+            response = await process_image(self.upload("example.png"), None)
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.content, b"fake-png")
-        self.assertEqual(fake_service.last_call, (b"raw-image", "example.png"))
+        self.assertEqual(fake_service.last_call, (b"raw-image", "example.png", None))
         self.assertEqual(response.headers["content-type"], "image/png")
         self.assertEqual(response.headers["x-rgbde-filename"], "rgbde_result.png")
         self.assertEqual(
@@ -73,13 +98,26 @@ class ApiRoutesTest(unittest.TestCase):
             "%E6%B7%B1%E5%BA%A6%E7%B5%90%E6%9E%9C.png",
         )
 
-    def test_process_endpoint_maps_value_error_to_400(self) -> None:
+    async def test_process_endpoint_maps_value_error_to_400(self) -> None:
         with patch("server.main.get_depth_service", return_value=_FailingDepthService()):
-            with TestClient(app) as client:
-                response = client.post(
-                    "/api/process",
-                    files={"image": ("example.gif", b"raw-image", "image/gif")},
-                )
+            with self.assertRaises(HTTPException) as caught:
+                await process_image(self.upload("example.gif"), None)
+        self.assertEqual(caught.exception.status_code, 400)
+        self.assertEqual(caught.exception.detail, "Only JPG and PNG inputs are supported.")
 
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json(), {"detail": "Only JPG and PNG inputs are supported."})
+    async def test_process_endpoint_forwards_35mm_equivalent_focal_override(self) -> None:
+        fake_service = _FakeDepthService()
+        with patch("server.main.get_depth_service", return_value=fake_service):
+            response = await process_image(self.upload("example.jpg"), 28.0)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(fake_service.last_call, (b"raw-image", "example.jpg", 28.0))
+
+    async def test_process_endpoint_rejects_invalid_focal_override(self) -> None:
+        fake_service = _FakeDepthService()
+        with patch("server.main.get_depth_service", return_value=fake_service):
+            with self.assertRaises(HTTPException) as caught:
+                await process_image(self.upload("example.jpg"), 9.0)
+        self.assertEqual(caught.exception.status_code, 400)
+        self.assertIn("10 to 800", caught.exception.detail)
+        self.assertFalse(hasattr(fake_service, "last_call"))
